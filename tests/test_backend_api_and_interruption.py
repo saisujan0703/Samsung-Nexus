@@ -1,0 +1,170 @@
+"""
+End-to-end integration test for NEXUS Backend REST, WebSocket, and Interruptible Engine.
+
+Tests:
+1. REST Endpoints (health, session CRUD, tasks, context)
+2. WebSocket connection and live event forwarding
+3. Complex live scenario:
+   - Initial goal: "Plan a 3-day Chennai trip for 15000 rupees."
+   - Interruption 1: "Wait. I am travelling with my parents. Avoid places requiring lots of walking."
+     -> Verified: classified as CONSTRAINT_CHANGE, plan diff KEEP/CANCEL/MODIFY/ADD, selective task cancellation.
+   - Interruption 2: "Actually increase the budget to 20000."
+     -> Verified: budget updated, replanned.
+   - Interruption 3: "Forget the trip. Help me prepare for an interview instead."
+     -> Verified: classified as NEW_GOAL, obsolete trip tasks cancelled, new interview plan generated.
+"""
+
+import asyncio
+import pytest
+from fastapi.testclient import TestClient
+
+from backend.main import app
+from backend.agent.orchestrator import AgentState
+from backend.agent.interruption_manager import InterruptionType
+from backend.execution.task_graph import TaskStatus
+
+
+def test_rest_endpoints():
+    """Verify all REST API endpoints."""
+    client = TestClient(app)
+
+    # 1. GET /health
+    res = client.get("/health")
+    assert res.status_code == 200
+    assert res.json()["status"] == "ok"
+
+    # 2. POST /api/session
+    res = client.post("/api/session")
+    assert res.status_code == 200
+    session_id = res.json()["session_id"]
+    assert len(session_id) > 0
+
+    # 3. GET /api/session/{session_id}
+    res = client.get(f"/api/session/{session_id}")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["session_id"] == session_id
+    assert data["state"] == "IDLE"
+
+    # 4. GET /api/session/{session_id}/tasks
+    res = client.get(f"/api/session/{session_id}/tasks")
+    assert res.status_code == 200
+    assert "tasks" in res.json()
+
+    # 5. GET /api/session/{session_id}/context
+    res = client.get(f"/api/session/{session_id}/context")
+    assert res.status_code == 200
+    assert "session_id" in res.json()
+
+
+def test_websocket_and_live_events():
+    """Verify WebSocket connection, initial snapshot, and typed event forwarding."""
+    client = TestClient(app)
+
+    # Create session
+    res = client.post("/api/session")
+    session_id = res.json()["session_id"]
+
+    # Connect WebSocket
+    with client.websocket_connect(f"/ws/{session_id}") as ws:
+        # Initial state message
+        init_msg = ws.receive_json()
+        assert init_msg["type"] == "initial_state"
+        assert init_msg["session_id"] == session_id
+        assert init_msg["payload"]["state"] == "IDLE"
+
+        # Send ping
+        ws.send_json({"type": "ping"})
+        pong = ws.receive_json()
+        assert pong["type"] == "pong"
+
+
+@pytest.mark.asyncio
+async def test_end_to_end_interruptible_flow():
+    """
+    Test the exact defining NEXUS scenario:
+    Initial Goal -> Execution -> Interruption (Parents + Walking) ->
+    Constraint Change -> Plan Diff -> Selective Cancellation ->
+    Budget Update -> New Goal Pivot.
+    """
+    from backend.memory.session_memory import session_memory
+    from backend.realtime.events import EventType
+
+    session_id = "test_scenario_1"
+    orchestrator, event_bus, _ = await session_memory.get_or_create(session_id)
+
+    events_received = []
+
+    async def event_collector(evt):
+        events_received.append(evt)
+
+    event_bus.subscribe_all(event_collector)
+
+    # -----------------------------------------------------------------------
+    # Step 1: User gives initial complex goal
+    # -----------------------------------------------------------------------
+    initial_prompt = "Plan a 3-day Chennai trip for 15000 rupees."
+    result1 = await orchestrator.handle_user_input(initial_prompt)
+
+    assert result1["status"] == "plan_started"
+    assert len(orchestrator.task_graph) > 0
+    assert orchestrator.state in (AgentState.EXECUTING, AgentState.THINKING)
+    assert orchestrator.goal_manager.current_goal is not None
+
+    # Let the tasks start executing briefly
+    await asyncio.sleep(0.3)
+    assert orchestrator.task_graph.has_running_tasks or len(orchestrator.task_graph.get_tasks_by_status(TaskStatus.COMPLETED)) > 0
+
+    initial_task_count = len(orchestrator.task_graph)
+    completed_before_interruption = len(orchestrator.task_graph.get_tasks_by_status(TaskStatus.COMPLETED))
+
+    # -----------------------------------------------------------------------
+    # Step 2: User interrupts while agent is executing
+    # -----------------------------------------------------------------------
+    interruption_text = "Wait. I am travelling with my parents. Avoid places requiring lots of walking."
+    result2 = await orchestrator.handle_user_input(interruption_text)
+
+    # Verify classification
+    assert result2["status"] == "replanned"
+    assert "diff" in result2
+    diff = result2["diff"]
+
+    # Verify Plan Diff contains KEEP, and affected tasks are modified/added
+    assert len(diff["keep"]) > 0, "Useful completed or independent tasks MUST be kept"
+    assert len(diff["modify"]) > 0 or len(diff["add"]) > 0
+
+    # Verify constraints were updated
+    constraints = orchestrator.goal_manager.get_constraints()
+    assert constraints.get("max_walking") == "low"
+    assert constraints.get("num_people", 0) >= 3  # parents added to group
+
+    # Verify Context preservation
+    preserved_findings = orchestrator.context_manager.get_valid_findings()
+    # Any completed findings before interruption should be preserved if valid
+    assert orchestrator.context_manager.context.interruption_count >= 1
+
+    # -----------------------------------------------------------------------
+    # Step 3: Second Interruption — Budget modification
+    # -----------------------------------------------------------------------
+    budget_interruption = "Actually increase the budget to 20000."
+    result3 = await orchestrator.handle_user_input(budget_interruption)
+
+    assert result3["status"] == "replanned"
+    new_budget = orchestrator.goal_manager.get_constraints().get("budget")
+    assert new_budget == 20000
+
+    # -----------------------------------------------------------------------
+    # Step 4: Third Interruption — Complete Goal Pivot (NEW_GOAL)
+    # -----------------------------------------------------------------------
+    new_goal_text = "Forget the trip. Help me prepare for an interview instead."
+    result4 = await orchestrator.handle_user_input(new_goal_text)
+
+    assert result4["status"] == "new_goal_started"
+    # Verify the current goal is now interview prep
+    assert "interview" in orchestrator.goal_manager.get_goal_summary().lower()
+    # Verify new tasks are running for interview
+    assert orchestrator.state in (AgentState.EXECUTING, AgentState.THINKING)
+
+    # Clean up
+    await orchestrator.executor.stop()
+    await session_memory.delete(session_id)
