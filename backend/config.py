@@ -19,10 +19,13 @@ else:
 class Settings:
     """Application settings sourced from environment variables."""
 
+    SUPPORTED_LLM_PROVIDERS = {"mock", "gemini", "google_gemini"}
+
     # LLM Provider
     LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "mock")
     GOOGLE_API_KEY: str = os.getenv("GOOGLE_API_KEY", "")
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
+    GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
 
     # Speech
     DEEPGRAM_API_KEY: str = os.getenv("DEEPGRAM_API_KEY", "")
@@ -40,6 +43,42 @@ class Settings:
 
     # Redis (optional)
     REDIS_URL: str = os.getenv("REDIS_URL", "")
+
+    @classmethod
+    def normalize_provider_name(cls, provider_name: str | None) -> str:
+        """Normalize provider names coming from config or user input."""
+        if provider_name is None:
+            return "mock"
+        normalized = provider_name.strip().lower().replace("-", "_")
+        if normalized in {"google", "google_gemini"}:
+            return "google_gemini"
+        return normalized
+
+    @classmethod
+    def validate_provider_config(
+        cls,
+        provider_name: str | None = None,
+        api_key: str | None = None,
+        model_name: str | None = None,
+    ) -> dict[str, str | bool]:
+        """Validate provider configuration and return sanitized runtime settings."""
+        provider = cls.normalize_provider_name(provider_name or os.getenv("LLM_PROVIDER", "mock"))
+        if provider not in cls.SUPPORTED_LLM_PROVIDERS:
+            raise ValueError(
+                f"Unsupported LLM provider: {provider!r}. Supported values: {', '.join(sorted(cls.SUPPORTED_LLM_PROVIDERS))}."
+            )
+
+        if provider in {"gemini", "google_gemini"}:
+            if not (api_key or "").strip():
+                raise ValueError("Missing required configuration: GOOGLE_API_KEY must be set when LLM_PROVIDER is 'gemini'.")
+            if not (model_name or "").strip():
+                raise ValueError("Missing required configuration: GEMINI_MODEL must be set to a non-empty model name.")
+
+        return {
+            "provider": provider,
+            "api_key_present": bool((api_key or "").strip()),
+            "model": (model_name or "gemini-1.5-flash").strip() or "gemini-1.5-flash",
+        }
 
     @property
     def use_redis(self) -> bool:

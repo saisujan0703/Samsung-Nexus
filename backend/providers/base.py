@@ -15,6 +15,8 @@ from typing import Any, AsyncIterator
 
 from pydantic import BaseModel, Field
 
+from backend.config import Settings
+
 
 # ---------------------------------------------------------------------------
 # Types
@@ -401,9 +403,23 @@ class MockProvider(LLMProvider):
 # Factory
 # ---------------------------------------------------------------------------
 
-def create_provider(provider_name: str = "mock") -> LLMProvider:
-    """Create an LLM provider by name."""
-    if provider_name in ("gemini", "google", "google_gemini"):
+def create_provider(provider_name: str | None = None) -> LLMProvider:
+    """Create an LLM provider by name.
+
+    The default resolves from runtime configuration so provider selection is driven
+    by environment or config, not by hardcoded values.
+    """
+    selected_provider = Settings.normalize_provider_name(provider_name or Settings.LLM_PROVIDER)
+    Settings.validate_provider_config(
+        selected_provider,
+        api_key=Settings.GOOGLE_API_KEY,
+        model_name=Settings.GEMINI_MODEL,
+    )
+
+    if selected_provider in {"gemini", "google_gemini"}:
         from backend.providers.google_gemini import GeminiProvider
-        return GeminiProvider()
-    return MockProvider()
+        return GeminiProvider(api_key=Settings.GOOGLE_API_KEY, model=Settings.GEMINI_MODEL)
+    if selected_provider == "mock":
+        return MockProvider()
+
+    raise ValueError(f"Unsupported LLM provider: {selected_provider!r}. Supported values: mock, gemini, google_gemini")

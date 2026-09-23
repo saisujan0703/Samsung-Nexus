@@ -13,7 +13,7 @@ import logging
 from typing import Any, AsyncIterator
 import httpx
 
-from backend.config import settings
+from backend.config import Settings, settings
 from backend.providers.base import (
     Classification,
     LLMProvider,
@@ -38,11 +38,17 @@ class GeminiProvider(LLMProvider):
     def __init__(
         self,
         api_key: str | None = None,
-        model: str = "gemini-1.5-flash",
+        model: str | None = None,
         fallback_to_mock: bool = True,
     ) -> None:
-        self.api_key = api_key or settings.GOOGLE_API_KEY
-        self.model = model
+        selected_model = (model or settings.GEMINI_MODEL or "gemini-1.5-flash").strip()
+        selected_api_key = (api_key or settings.GOOGLE_API_KEY or "").strip()
+
+        if not selected_model:
+            raise ValueError("Missing required configuration: GEMINI_MODEL must be set to a non-empty model name.")
+
+        self.api_key = selected_api_key
+        self.model = selected_model
         self.fallback_to_mock = fallback_to_mock
         self._fallback_provider = MockProvider()
 
