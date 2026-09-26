@@ -55,6 +55,7 @@ export interface TranscriptMessage {
   timestamp: string;
   isInterruption?: boolean;
   category?: string;
+  imageUrl?: string;
 }
 
 export interface SessionSnapshot {

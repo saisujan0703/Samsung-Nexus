@@ -267,6 +267,36 @@ export function useNexusWebSocket() {
         }
         break;
 
+      case "user_image_upload":
+      case "image_received":
+        if (msg.data?.prompt || msg.data?.image_data) {
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: Math.random().toString(),
+              role: "user",
+              content: `[Image Attached] ${msg.data?.prompt || ""}`,
+              imageUrl: msg.data?.image_data,
+              timestamp: msg.timestamp || new Date().toISOString(),
+            },
+          ]);
+        }
+        break;
+
+      case "image_context_ready":
+        if (msg.data?.analysis) {
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: Math.random().toString(),
+              role: "assistant",
+              content: `[Visual Analysis] ${msg.data.analysis}`,
+              timestamp: msg.timestamp || new Date().toISOString(),
+            },
+          ]);
+        }
+        break;
+
       case "response_started":
         activeResponseIdRef.current += 1;
         setMessages((prev) => [
@@ -338,6 +368,49 @@ export function useNexusWebSocket() {
     [cancelSpeech, sessionId]
   );
 
+  // Send image to backend
+  const uploadImage = useCallback(
+    async (imageData: string, prompt: string = "") => {
+      if (!imageData) return;
+      cancelSpeech();
+      activeResponseIdRef.current += 1;
+
+      // Add user turn locally right away
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: Math.random().toString(),
+          role: "user",
+          content: `[Image Attached] ${prompt}`,
+          imageUrl: imageData,
+          timestamp: new Date().toISOString(),
+        },
+      ]);
+
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(
+          JSON.stringify({
+            type: "image_upload",
+            image_data: imageData,
+            prompt,
+          })
+        );
+      } else {
+        try {
+          const sid = sessionIdRef.current || sessionId;
+          await fetch(`${BACKEND_HTTP}/api/session/${sid}/image`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ image_data: imageData, prompt }),
+          });
+        } catch (err) {
+          console.error("Failed to upload image via REST:", err);
+        }
+      }
+    },
+    [cancelSpeech, sessionId]
+  );
+
   // Restart session
   const resetSession = useCallback(async () => {
     cancelSpeech();
@@ -364,6 +437,7 @@ export function useNexusWebSocket() {
     events,
     activeInterruption,
     sendUserInput,
+    uploadImage,
     sendSpeechStarted,
     resetSession,
     // TTS Voice Output properties

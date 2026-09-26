@@ -153,6 +153,14 @@ class TaskExecutor:
                 input=task.input,
             )
 
+            await self.event_bus.emit(
+                EventType.TOOL_PROGRESS,
+                session_id=self.session_id,
+                task_id=task.id,
+                tool_name=task.tool,
+                status="executing",
+            )
+
             # Execute the tool
             result = await tool.execute(task.input, cancel_event)
 

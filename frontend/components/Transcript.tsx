@@ -62,6 +62,17 @@ export function Transcript({ messages }: TranscriptProps) {
                     </div>
                   )}
 
+                  {/* Image Attachment Preview */}
+                  {msg.imageUrl && (
+                    <div className="mb-2.5 overflow-hidden rounded-xl border border-indigo-500/40 max-w-[220px]">
+                      <img
+                        src={msg.imageUrl}
+                        alt="Attached content"
+                        className="w-full h-auto object-cover max-h-[160px]"
+                      />
+                    </div>
+                  )}
+
                   <div className="whitespace-pre-wrap">{msg.content || "..."}</div>
                 </div>
 

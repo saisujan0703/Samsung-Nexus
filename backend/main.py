@@ -109,6 +109,8 @@ async def post_image(session_id: str, request: ImageUploadRequest) -> dict[str, 
     """Submit image to the agent."""
     orchestrator, _, _ = await session_memory.get_or_create(session_id)
     result = await orchestrator.handle_image_upload(request.image_data, request.prompt)
+    if result.get("status") == "error":
+        raise HTTPException(status_code=400, detail=result.get("error", "Image processing error"))
     return result
 
 

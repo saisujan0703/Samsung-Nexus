@@ -23,6 +23,7 @@ export default function Home() {
     events,
     activeInterruption,
     sendUserInput,
+    uploadImage,
     sendSpeechStarted,
     resetSession,
     isSpeaking,
@@ -71,6 +72,7 @@ export default function Home() {
           <div className="shrink-0">
             <InputArea
               onSend={sendUserInput}
+              onUploadImage={uploadImage}
               disabled={!connected}
               onCancelSpeech={cancelSpeech}
               onSpeechStart={sendSpeechStarted}

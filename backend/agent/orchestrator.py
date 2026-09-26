@@ -443,21 +443,103 @@ class Orchestrator:
 
     async def handle_image_upload(self, image_data: str, prompt: str = "") -> dict[str, Any]:
         """Handle user multimodal image input."""
-        await self.event_bus.emit(
-            EventType.USER_IMAGE_UPLOAD,
-            session_id=self.session_id,
-            prompt=prompt,
-        )
-        # Analyze image
-        analysis = await self.llm.analyze_image(image_data, prompt)
+        async with self._lock:
+            # 1. Image payload validation
+            if not image_data or not isinstance(image_data, str):
+                await self.event_bus.emit(
+                    EventType.ERROR,
+                    session_id=self.session_id,
+                    error="Invalid image upload payload",
+                )
+                return {"status": "error", "error": "Invalid image payload"}
 
-        await self.context_manager.add_finding(
-            task_id="image_upload",
-            category="vision",
-            data={"analysis": analysis, "prompt": prompt},
-        )
+            # Max 10MB base64 payload size check (~14 million chars)
+            if len(image_data) > 14_000_000:
+                await self.event_bus.emit(
+                    EventType.ERROR,
+                    session_id=self.session_id,
+                    error="Image payload exceeds 10MB size limit",
+                )
+                return {"status": "error", "error": "Image payload exceeds 10MB size limit"}
 
-        return {"status": "image_analyzed", "analysis": analysis}
+            # Format check if data URI format
+            if "," in image_data:
+                header = image_data.split(",", 1)[0].lower()
+                if not any(fmt in header for fmt in ["png", "jpeg", "jpg", "webp", "gif"]):
+                    await self.event_bus.emit(
+                        EventType.ERROR,
+                        session_id=self.session_id,
+                        error="Unsupported image format",
+                    )
+                    return {"status": "error", "error": "Unsupported image format"}
+
+            start_version = self.plan_version
+
+            await self.event_bus.emit(
+                EventType.USER_IMAGE_UPLOAD,
+                session_id=self.session_id,
+                prompt=prompt,
+            )
+            await self.event_bus.emit(
+                EventType.IMAGE_RECEIVED,
+                session_id=self.session_id,
+                prompt=prompt,
+            )
+            await self.event_bus.emit(
+                EventType.IMAGE_PROCESSING,
+                session_id=self.session_id,
+                prompt=prompt,
+            )
+
+            try:
+                # 2. Analyze image using provider / tool
+                analysis = await self.llm.analyze_image(image_data, prompt)
+
+                # 3. Check for interruption / plan version change
+                if self.plan_version != start_version:
+                    return {"status": "stale_ignored", "reason": "plan_version_changed"}
+
+                # 4. Integrate into Session Context
+                await self.context_manager.add_finding(
+                    task_id="image_upload",
+                    category="vision",
+                    data={"analysis": analysis, "prompt": prompt or "Image uploaded"},
+                )
+                await self.context_manager.add_conversation_turn("user", f"[Uploaded Image] {prompt if prompt else 'Image attached'}")
+                await self.context_manager.add_conversation_turn("assistant", f"[Visual Analysis] {analysis}")
+
+                await self.event_bus.emit(
+                    EventType.IMAGE_CONTEXT_READY,
+                    session_id=self.session_id,
+                    analysis=analysis,
+                    prompt=prompt,
+                )
+
+                # 5. If prompt contains text or agent is active, trigger contextual replan
+                if prompt.strip() and self.state in (AgentState.EXECUTING, AgentState.SPEAKING, AgentState.THINKING):
+                    await self.set_state(AgentState.REPLANNING, reason="multimodal_replan")
+                    diff = await self.replanner.compute_diff(
+                        task_graph=self.task_graph,
+                        new_constraints=self.goal_manager.get_constraints(),
+                        changed_fields={"image_context": analysis, "prompt": prompt},
+                    )
+                    apply_summary = await self.replanner.apply_diff(
+                        task_graph=self.task_graph,
+                        diff=diff,
+                        executor_cancel_callback=self.executor.cancel_task,
+                    )
+                    await self.set_state(AgentState.EXECUTING, reason="multimodal_replan_applied")
+                    self._ensure_execution_running()
+
+                return {"status": "image_analyzed", "analysis": analysis}
+
+            except Exception as e:
+                await self.event_bus.emit(
+                    EventType.ERROR,
+                    session_id=self.session_id,
+                    error=f"Image processing failed: {e}",
+                )
+                return {"status": "error", "error": str(e)}
 
     # -- Snapshot & Status -------------------------------------------------
 
