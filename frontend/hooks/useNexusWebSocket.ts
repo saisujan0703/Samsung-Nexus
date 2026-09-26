@@ -42,6 +42,7 @@ export function useNexusWebSocket() {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const activeResponseIdRef = useRef<number>(0);
+  const sessionIdRef = useRef<string>("");
 
   // Send fast-path speech_started notification on speech onset
   const sendSpeechStarted = useCallback(() => {
@@ -56,11 +57,15 @@ export function useNexusWebSocket() {
   }, [cancelSpeech]);
 
   // Initialize or fetch session
-  const initSession = useCallback(async () => {
+  const initSession = useCallback(async (forceNew = false) => {
+    if (!forceNew && sessionIdRef.current) {
+      return sessionIdRef.current;
+    }
     try {
       const res = await fetch(`${BACKEND_HTTP}/api/session`, { method: "POST" });
       if (res.ok) {
         const data = await res.json();
+        sessionIdRef.current = data.session_id;
         setSessionId(data.session_id);
         return data.session_id;
       }
@@ -68,6 +73,7 @@ export function useNexusWebSocket() {
       console.warn("Failed to create session via REST, using generated ID:", err);
     }
     const fallbackId = Math.random().toString(36).substring(2, 10);
+    sessionIdRef.current = fallbackId;
     setSessionId(fallbackId);
     return fallbackId;
   }, []);
@@ -343,7 +349,7 @@ export function useNexusWebSocket() {
     setActiveInterruption(null);
     setGoalSummary("");
     setConstraints({});
-    await initSession();
+    await initSession(true);
   }, [cancelSpeech, initSession]);
 
   return {

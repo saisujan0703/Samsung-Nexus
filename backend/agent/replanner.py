@@ -20,7 +20,9 @@ from backend.realtime.events import EventBus, EventType
 class PlanDiff:
     """Result of comparing an old plan to a new plan."""
 
-    def __init__(self) -> None:
+    def __init__(self, diff_id: str = "") -> None:
+        import uuid
+        self.diff_id: str = diff_id or uuid.uuid4().hex[:8]
         self.keep: list[str] = []       # task IDs to keep
         self.cancel: list[str] = []     # task IDs to cancel
         self.modify: list[dict] = []    # {task_id, changes}
@@ -28,6 +30,7 @@ class PlanDiff:
 
     def to_dict(self) -> dict:
         return {
+            "diff_id": self.diff_id,
             "keep": self.keep,
             "cancel": self.cancel,
             "modify": self.modify,
@@ -57,6 +60,7 @@ class Replanner:
         self.llm = llm_provider
         self.event_bus = event_bus
         self.session_id = session_id
+        self._applied_diff_ids: set[str] = set()
 
     async def compute_diff(
         self,
@@ -140,6 +144,16 @@ class Replanner:
 
         Returns a summary of what changed.
         """
+        if diff.diff_id in self._applied_diff_ids:
+            return {
+                "cancelled": [],
+                "modified": [],
+                "added": [],
+                "kept": diff.keep,
+                "idempotent_skip": True,
+            }
+        self._applied_diff_ids.add(diff.diff_id)
+
         cancelled_ids: list[str] = []
         modified_ids: list[str] = []
         added_ids: list[str] = []

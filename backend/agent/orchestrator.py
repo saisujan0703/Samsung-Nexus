@@ -53,6 +53,7 @@ class Orchestrator:
 
         self.state: AgentState = AgentState.IDLE
         self.previous_state: AgentState = AgentState.IDLE
+        self.plan_version: int = 1
 
         # Subsystems
         self.task_graph = TaskGraph()
@@ -118,19 +119,20 @@ class Orchestrator:
 
     async def handle_speech_started(self) -> None:
         """Process an immediate user speech onset signal from WebSocket."""
-        await self.event_bus.emit(
-            EventType.USER_SPEECH_STARTED,
-            session_id=self.session_id,
-        )
-        if self.state in (
-            AgentState.SPEAKING,
-            AgentState.EXECUTING,
-            AgentState.THINKING,
-            AgentState.REPLANNING,
-        ):
-            if self.state == AgentState.SPEAKING:
-                self.response_manager.cancel_response()
-            await self.set_state(AgentState.INTERRUPTED, reason="user_speech_started")
+        async with self._lock:
+            await self.event_bus.emit(
+                EventType.USER_SPEECH_STARTED,
+                session_id=self.session_id,
+            )
+            if self.state in (
+                AgentState.SPEAKING,
+                AgentState.EXECUTING,
+                AgentState.THINKING,
+                AgentState.REPLANNING,
+            ):
+                if self.state == AgentState.SPEAKING:
+                    self.response_manager.cancel_response()
+                await self.set_state(AgentState.INTERRUPTED, reason="user_speech_started")
 
     async def _handle_interruption(self, text: str) -> dict[str, Any]:
         """Process a live user interruption while agent is active."""
@@ -198,6 +200,8 @@ class Orchestrator:
         ack_speech: str = "",
     ) -> dict[str, Any]:
         """Apply constraint change via Replanner without full restart."""
+        self.plan_version += 1
+        self.executor.plan_version = self.plan_version
         await self.set_state(AgentState.REPLANNING, reason="constraint_change")
 
         # 1. Update Goal constraints
@@ -244,6 +248,8 @@ class Orchestrator:
         ack_speech: str = "",
     ) -> dict[str, Any]:
         """Goal modified — replan affected elements."""
+        self.plan_version += 1
+        self.executor.plan_version = self.plan_version
         await self.set_state(AgentState.REPLANNING, reason="goal_change")
         new_summary = f"{self.goal_manager.get_goal_summary()} (Modified: {interruption.raw_text})"
         constraints = self.goal_manager.get_constraints()
@@ -277,6 +283,8 @@ class Orchestrator:
         ack_speech: str = "",
     ) -> dict[str, Any]:
         """Complete pivot to a brand new goal."""
+        self.plan_version += 1
+        self.executor.plan_version = self.plan_version
         await self.executor.stop()
         await self.set_state(AgentState.THINKING, reason="new_goal_pivot")
 
@@ -305,6 +313,8 @@ class Orchestrator:
         ack_speech: str = "",
     ) -> dict[str, Any]:
         """Cancel specific or active tasks."""
+        self.plan_version += 1
+        self.executor.plan_version = self.plan_version
         cancelled = await self.executor.cancel_tasks(
             self.executor.get_running_task_ids(),
             reason="user_requested_cancellation",
@@ -340,6 +350,8 @@ class Orchestrator:
 
     async def _handle_new_goal(self, text: str) -> dict[str, Any]:
         """Initial goal creation and execution trigger."""
+        self.plan_version += 1
+        self.executor.plan_version = self.plan_version
         await self.set_state(AgentState.THINKING, reason="initial_planning")
 
         # 1. Initial Plan Creation
@@ -377,17 +389,21 @@ class Orchestrator:
     def _ensure_execution_running(self) -> None:
         """Start or restart the task executor loop and monitoring."""
         asyncio.create_task(self.executor.start())
-        if not self._execution_monitor_task or self._execution_monitor_task.done():
-            self._execution_monitor_task = asyncio.create_task(self._monitor_execution_loop())
+        if self._execution_monitor_task and not self._execution_monitor_task.done():
+            self._execution_monitor_task.cancel()
+        self._execution_monitor_task = asyncio.create_task(self._monitor_execution_loop())
 
     async def _monitor_execution_loop(self) -> None:
         """Monitors task execution progress and completes response when all tasks finish."""
+        start_version = self.plan_version
         try:
             while not self.task_graph.is_complete:
-                await asyncio.sleep(0.2)
+                await asyncio.sleep(0.1)
+                if self.plan_version != start_version:
+                    return
 
             # When complete and not interrupted:
-            if self.state == AgentState.EXECUTING:
+            if self.state == AgentState.EXECUTING and self.plan_version == start_version:
                 await self.set_state(AgentState.SPEAKING, reason="tasks_completed")
 
                 completed_tasks = [
@@ -403,20 +419,25 @@ class Orchestrator:
                             data=t["output"],
                         )
 
+                if self.plan_version != start_version:
+                    return
+
                 # Generate speech / text response
                 summary = await self.response_manager.generate_task_response(
                     task_results=completed_tasks,
                     goal=self.goal_manager.get_goal_summary(),
                     context=self.context_manager.get_context_summary(),
                 )
-                await self.context_manager.add_conversation_turn("assistant", summary)
-                await self.set_state(AgentState.IDLE, reason="response_finished")
+                if self.plan_version == start_version and self.state == AgentState.SPEAKING:
+                    await self.context_manager.add_conversation_turn("assistant", summary)
+                    await self.set_state(AgentState.IDLE, reason="response_finished")
 
         except asyncio.CancelledError:
             pass
         except Exception as e:
             print(f"[Orchestrator] Execution monitor error: {e}")
-            await self.set_state(AgentState.IDLE, reason=f"error_{e}")
+            if self.plan_version == start_version:
+                await self.set_state(AgentState.IDLE, reason=f"error_{e}")
 
     # -- Image Handling ----------------------------------------------------
 
