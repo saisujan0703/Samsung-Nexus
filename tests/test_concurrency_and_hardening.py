@@ -12,7 +12,7 @@ from backend.agent.interruption_manager import Interruption, InterruptionType
 from backend.agent.replanner import Replanner, PlanDiff
 from backend.execution.task_executor import TaskExecutor
 from backend.execution.task_graph import Task, TaskGraph, TaskStatus
-from backend.memory.session_memory import SessionMemory
+from backend.memory.session_memory import SessionMemory, session_memory
 from backend.providers.base import MockProvider, PlanSpec
 from backend.realtime.events import EventBus, EventType, NexusEvent
 from backend.tools.base import ToolRegistry, BaseTool, ToolResult
@@ -208,3 +208,186 @@ async def test_i_eventbus_subscriber_error_isolation():
     # Emit event — faulty subscriber error must be caught and healthy subscriber must receive event
     event = await eb.emit(EventType.USER_TEXT_INPUT, text="test")
     assert EventType.USER_TEXT_INPUT in received
+
+
+# --------------------------------------------------------------------------
+# Test J: Response Manager EventType.RESPONSE_STARTED Regression Test
+# --------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_j_response_started_event_emission_regression(components):
+    eb, tr, llm, tg, executor, orchestrator = components
+    events_received = []
+
+    async def event_collector(evt: NexusEvent):
+        events_received.append(evt.type)
+
+    eb.subscribe_all(event_collector)
+
+    # Directly test response generation event lifecycle
+    resp = await orchestrator.response_manager.generate_task_response(
+        task_results=[{"id": "t1", "name": "Task 1", "status": "COMPLETED", "output": {"res": "ok"}}],
+        goal="Plan trip",
+        context="Sample context",
+    )
+
+    assert EventType.RESPONSE_STARTED in events_received
+    assert EventType.RESPONSE_COMPLETED in events_received
+    assert len(resp) > 0
+
+
+# --------------------------------------------------------------------------
+# Tests K - O: Non-travel goals, Topic Pivot, Session Reset, Subscriptable Safety
+# --------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_k_non_travel_query_no_chennai_dag():
+    """TEST A: Fresh session with general non-travel query generates no Chennai travel tasks."""
+    session_id = "test_non_travel_fresh"
+    orchestrator, event_bus, _ = await session_memory.get_or_create(session_id)
+
+    res = await orchestrator.handle_user_input("What is the capital of Australia?")
+    await asyncio.sleep(0.2)
+
+    tasks = orchestrator.task_graph.get_all_tasks()
+    task_names = [t.name.lower() for t in tasks]
+
+    assert "what is the capital of australia?" in orchestrator.goal_manager.get_goal_summary().lower()
+    assert not any("chennai" in name for name in task_names)
+    assert not any("hotel" in name for name in task_names)
+
+
+@pytest.mark.asyncio
+async def test_l_topic_pivot_clears_chennai_dag():
+    """TEST B: Active Chennai trip followed by general non-travel query pivots without executing Chennai tasks."""
+    session_id = "test_topic_pivot"
+    orchestrator, event_bus, _ = await session_memory.get_or_create(session_id)
+
+    await orchestrator.handle_user_input("Plan a 3-day Chennai trip for 15000 rupees.")
+    await asyncio.sleep(0.1)
+
+    res = await orchestrator.handle_user_input("Find the latest information about the UEFA Champions League and tell me which teams are playing this week.")
+    await asyncio.sleep(0.2)
+
+    tasks = orchestrator.task_graph.get_all_tasks()
+    task_names = [t.name.lower() for t in tasks]
+
+    assert not any("chennai" in name for name in task_names)
+    assert any("search" in name or "synthesize" in name for name in task_names)
+
+
+@pytest.mark.asyncio
+async def test_m_session_reset_isolation():
+    """TEST C: Reset session creates isolated state without leaking old task graph."""
+    old_id = "test_reset_old"
+    orchestrator_old, event_bus_old, _ = await session_memory.get_or_create(old_id)
+    await orchestrator_old.handle_user_input("Plan a 3-day Chennai trip for 15000 rupees.")
+    await asyncio.sleep(0.1)
+
+    await session_memory.delete(old_id)
+
+    new_id = "test_reset_new"
+    orchestrator_new, event_bus_new, _ = await session_memory.get_or_create(new_id)
+    await orchestrator_new.handle_user_input("What is the capital of Australia?")
+    await asyncio.sleep(0.2)
+
+    tasks = orchestrator_new.task_graph.get_all_tasks()
+    task_names = [t.name.lower() for t in tasks]
+    assert not any("chennai" in name for name in task_names)
+
+
+@pytest.mark.asyncio
+async def test_n_subscriptable_safe_response_generation(components):
+    """TEST D: Verify non-dict outputs (ints, strings, empty lists) do not cause subscriptable TypeError."""
+    eb, tr, llm, tg, executor, orchestrator = components
+
+    results_with_int = [
+        {"name": "Numeric Output Task", "status": "COMPLETED", "output": 42},
+        {"name": "String Output Task", "status": "COMPLETED", "output": "Simple text"},
+        {"name": "List of Strings Task", "status": "COMPLETED", "output": {"destinations": ["Place A", "Place B"], "count": 2}},
+    ]
+
+    response = await orchestrator.response_manager.generate_task_response(
+        task_results=results_with_int,
+        goal="Test goal with non-dict outputs",
+        context="",
+    )
+    assert len(response) > 0
+    assert "Place A" in response or "Simple text" in response or "Numeric" in response
+
+
+@pytest.mark.asyncio
+async def test_o_event_payload_schema_compliance(components):
+    """TEST E: Verify RESPONSE_STARTED and RESPONSE_COMPLETED events have conformant payloads."""
+    eb, tr, llm, tg, executor, orchestrator = components
+    emitted_events = []
+
+    async def event_logger(evt: NexusEvent):
+        emitted_events.append(evt)
+
+    eb.subscribe_all(event_logger)
+
+    await orchestrator.response_manager.generate_task_response(
+        task_results=[{"id": "t1", "name": "Task 1", "status": "COMPLETED", "output": {"results": "Ok"}}],
+        goal="Schema test goal",
+        context="Schema test context",
+    )
+
+    started_evts = [e for e in emitted_events if e.type == EventType.RESPONSE_STARTED]
+    completed_evts = [e for e in emitted_events if e.type == EventType.RESPONSE_COMPLETED]
+
+    assert len(started_evts) >= 1
+    assert len(completed_evts) >= 1
+    assert "goal" in started_evts[0].data
+    assert "text" in completed_evts[0].data
+
+
+@pytest.mark.asyncio
+async def test_p_factual_query_returns_actual_answer():
+    """Verify general factual queries return actual answer content (e.g. Canberra, Tokyo) not meta-text."""
+    session_id1 = "test_factual_aus"
+    orchestrator1, event_bus1, _ = await session_memory.get_or_create(session_id1)
+
+    # Test Australia capital
+    await orchestrator1.handle_user_input("What is the capital of Australia?")
+    await asyncio.sleep(2.2)  # allow task graph execution (search + synthesize)
+    tasks1 = orchestrator1.task_graph.get_all_tasks()
+    completed_tasks1 = [t.to_dict() for t in tasks1 if t.status == TaskStatus.COMPLETED]
+    response1 = await orchestrator1.response_manager.generate_task_response(
+        task_results=completed_tasks1,
+        goal="What is the capital of Australia?",
+    )
+    assert "Canberra" in response1
+    assert "Retrieved current relevant information" not in response1
+
+    # Test Japan capital in fresh session
+    session_id2 = "test_factual_jpn"
+    orchestrator2, event_bus2, _ = await session_memory.get_or_create(session_id2)
+    await orchestrator2.handle_user_input("What is the capital of Japan?")
+    await asyncio.sleep(2.2)
+    tasks2 = orchestrator2.task_graph.get_all_tasks()
+    completed_tasks2 = [t.to_dict() for t in tasks2 if t.status == TaskStatus.COMPLETED]
+    response2 = await orchestrator2.response_manager.generate_task_response(
+        task_results=completed_tasks2,
+        goal="What is the capital of Japan?",
+    )
+    assert "Tokyo" in response2
+    assert "Retrieved current relevant information" not in response2
+
+
+@pytest.mark.asyncio
+async def test_q_unknown_query_honest_no_fabrication(components):
+    """Verify query with no retrieved data does not fabricate an answer."""
+    eb, tr, llm, tg, executor, orchestrator = components
+
+    no_data_results = [
+        {"name": "Search info", "status": "COMPLETED", "output": {"query": "xyz123", "results": None, "found": False}},
+        {"name": "Synthesize", "status": "COMPLETED", "output": {"query": "xyz123", "answer": None, "found": False}},
+    ]
+
+    response = await orchestrator.response_manager.generate_task_response(
+        task_results=no_data_results,
+        goal="Who won the 1842 lunar speedrace?",
+        context="",
+    )
+    assert "google_api_key" in response.lower() or "processed your request" in response.lower()
+    assert "Synthesized response for" not in response

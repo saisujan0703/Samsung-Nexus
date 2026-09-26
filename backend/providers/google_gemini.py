@@ -41,7 +41,7 @@ class GeminiProvider(LLMProvider):
         model: str | None = None,
         fallback_to_mock: bool = True,
     ) -> None:
-        selected_model = (model or settings.GEMINI_MODEL or "gemini-1.5-flash").strip()
+        selected_model = (model or settings.GEMINI_MODEL or "gemini-3.8-flash").strip()
         selected_api_key = (api_key or settings.GOOGLE_API_KEY or "").strip()
 
         if not selected_model:

@@ -23,20 +23,20 @@ def test_valid_provider_configuration(monkeypatch):
     """Valid runtime config should produce a configured Gemini provider."""
     monkeypatch.setenv("LLM_PROVIDER", "gemini")
     monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
-    monkeypatch.setenv("GEMINI_MODEL", "gemini-1.5-flash")
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-3.8-flash")
     config_module, provider_base_module = reload_provider_modules()
 
     provider = provider_base_module.create_provider(config_module.settings.LLM_PROVIDER)
     assert isinstance(provider, GeminiProvider)
     assert provider.name == "gemini"
-    assert provider.model == "gemini-1.5-flash"
+    assert provider.model == "gemini-3.8-flash"
 
 
 def test_missing_provider_configuration_raises(monkeypatch):
     """Missing API keys should be rejected before provider instantiation."""
     monkeypatch.setenv("LLM_PROVIDER", "gemini")
     monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
-    monkeypatch.setenv("GEMINI_MODEL", "gemini-1.5-flash")
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-3.8-flash")
     config_module, provider_base_module = reload_provider_modules()
 
     with pytest.raises(ValueError, match="GOOGLE_API_KEY"):
@@ -47,7 +47,7 @@ def test_invalid_provider_configuration_raises(monkeypatch):
     """Unsupported provider names should fail fast without silent fallback."""
     monkeypatch.setenv("LLM_PROVIDER", "unsupported_provider")
     monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
-    monkeypatch.setenv("GEMINI_MODEL", "gemini-1.5-flash")
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-3.8-flash")
     config_module, provider_base_module = reload_provider_modules()
 
     with pytest.raises(ValueError, match="Unsupported LLM provider"):

@@ -83,8 +83,8 @@ export function useNexusWebSocket() {
     let active = true;
 
     async function setup() {
-      const id = await initSession();
-      if (!active) return;
+      const id = sessionId || (await initSession());
+      if (!active || !id) return;
 
       const wsUrl = `${BACKEND_WS}/ws/${id}`;
       const ws = new WebSocket(wsUrl);
@@ -124,12 +124,13 @@ export function useNexusWebSocket() {
       active = false;
       if (wsRef.current) {
         wsRef.current.close();
+        wsRef.current = null;
       }
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
       }
     };
-  }, [initSession]);
+  }, [sessionId, initSession]);
 
   // Handler for typed events
   const handleWebSocketMessage = (msg: any) => {

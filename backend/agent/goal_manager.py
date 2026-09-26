@@ -94,17 +94,18 @@ class GoalManager:
         if actual_changes:
             self.current_goal.version += 1
 
-            # Update goal summary
+            # Update goal summary if travel constraints are active
             c = self.current_goal.constraints
             city = c.get("city", "").title()
-            days = c.get("duration_days", "?")
-            people = c.get("num_people", "?")
-            budget = c.get("budget", "?")
-            walking = c.get("max_walking", None)
-            summary_parts = [f"Plan a {days}-day {city} trip for {people} people under ₹{budget:,}" if isinstance(budget, int) else f"Plan a {days}-day {city} trip for {people} people"]
-            if walking:
-                summary_parts.append(f"(max walking: {walking})")
-            self.current_goal.summary = " ".join(summary_parts)
+            if city or "trip" in (self.current_goal.summary or "").lower():
+                days = c.get("duration_days", "?")
+                people = c.get("num_people", "?")
+                budget = c.get("budget", "?")
+                walking = c.get("max_walking", None)
+                summary_parts = [f"Plan a {days}-day {city} trip for {people} people under ₹{budget:,}" if isinstance(budget, int) else f"Plan a {days}-day {city} trip for {people} people"]
+                if walking:
+                    summary_parts.append(f"(max walking: {walking})")
+                self.current_goal.summary = " ".join(summary_parts)
 
             await self.event_bus.emit(
                 EventType.GOAL_CHANGED,

@@ -347,7 +347,11 @@ class Orchestrator:
         
         # Async task to speak and resume
         async def speak_and_resume():
-            await self.response_manager.generate_task_response([], ans)
+            await self.response_manager.generate_task_response(
+                task_results=[{"name": "Question Answer", "status": "COMPLETED", "output": {"answer": ans}}],
+                goal=interruption.raw_text,
+                context=self.context_manager.get_context_summary(),
+            )
             if self.task_graph.has_active_tasks:
                 await self.set_state(AgentState.EXECUTING, reason="resume_after_question")
             else:

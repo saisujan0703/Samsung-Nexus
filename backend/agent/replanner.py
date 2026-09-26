@@ -77,7 +77,8 @@ class Replanner:
         old_tasks = task_graph.get_all_tasks()
 
         # Generate new plan for comparison
-        goal = self._build_goal_string(new_constraints)
+        goal_summary = str(changed_fields.get("goal", ""))
+        goal = self._build_goal_string(new_constraints, goal_summary)
         new_plan = await self.llm.create_plan(goal, new_constraints)
 
         # Build lookup of new task names/tools
@@ -292,8 +293,10 @@ class Replanner:
 
         return False
 
-    def _build_goal_string(self, constraints: dict[str, Any]) -> str:
+    def _build_goal_string(self, constraints: dict[str, Any], goal_summary: str = "") -> str:
         city = constraints.get("city", "").title()
+        if not city:
+            return goal_summary or "General task goal"
         days = constraints.get("duration_days", "?")
         people = constraints.get("num_people", "?")
         budget = constraints.get("budget", "?")

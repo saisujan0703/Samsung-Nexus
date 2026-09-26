@@ -25,7 +25,7 @@ class Settings:
     LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "mock")
     GOOGLE_API_KEY: str = os.getenv("GOOGLE_API_KEY", "")
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
-    GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+    GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
 
     # Speech
     DEEPGRAM_API_KEY: str = os.getenv("DEEPGRAM_API_KEY", "")
@@ -77,7 +77,7 @@ class Settings:
         return {
             "provider": provider,
             "api_key_present": bool((api_key or "").strip()),
-            "model": (model_name or "gemini-1.5-flash").strip() or "gemini-1.5-flash",
+            "model": (model_name or "gemini-3.8-flash").strip() or "gemini-3.8-flash",
         }
 
     @property

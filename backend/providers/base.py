@@ -109,24 +109,36 @@ class MockProvider(LLMProvider):
         text_lower = text.lower().strip()
 
         # Backchannel detection
-        backchannels = {"yeah", "yes", "okay", "ok", "uh huh", "hmm", "right", "sure", "got it", "mhm", "yep", "alright", "fine", "cool"}
-        if text_lower in backchannels or len(text_lower.split()) <= 2 and text_lower in backchannels:
+        backchannels = {"yeah", "yes", "okay", "ok", "uh huh", "hmm", "right", "sure", "got it", "mhm", "yep", "alright", "fine", "cool", "cool, got it", "cool got it", "got it thanks"}
+        words_in_text = set(re.findall(r"\w+", text_lower))
+        if text_lower in backchannels or any(text_lower == b for b in backchannels):
             return Classification(category="BACKCHANNEL", confidence=0.95, reasoning="Short backchannel utterance")
+        if all(w in {"yeah", "yes", "okay", "ok", "uh", "huh", "hmm", "right", "sure", "got", "it", "mhm", "yep", "alright", "fine", "cool", "thanks", "nice"} for w in words_in_text):
+            return Classification(category="BACKCHANNEL", confidence=0.95, reasoning="Backchannel interjection")
 
         # Task cancellation
         cancel_patterns = ["stop", "cancel", "don't", "forget about", "skip", "remove", "drop"]
         if any(p in text_lower for p in cancel_patterns) and not any(w in text_lower for w in ["instead", "actually", "change"]):
             return Classification(category="TASK_CANCELLATION", confidence=0.85, reasoning="Cancellation keywords detected")
 
-        # New goal detection (complete topic change)
+        # New goal explicit patterns
         new_goal_patterns = ["forget the trip", "forget about", "help me with something else", "let's do something else", "new topic", "forget everything", "start over"]
         if any(p in text_lower for p in new_goal_patterns):
             return Classification(category="NEW_GOAL", confidence=0.9, reasoning="Complete goal change detected")
 
-        # Question detection
-        question_markers = ["why", "how", "what", "when", "where", "which", "can you explain", "tell me why", "?"]
-        if any(text_lower.startswith(q) for q in ["why", "how", "what", "when", "where", "which"]) or text_lower.endswith("?"):
-            return Classification(category="QUESTION", confidence=0.85, reasoning="Question pattern detected")
+        # Goal change (broader changes / modifications)
+        goal_patterns = ["instead of", "rather than", "switch to", "change the plan", "different", "hostels", "hostel", "find .* instead"]
+        if any(re.search(p, text_lower) for p in goal_patterns):
+            return Classification(category="GOAL_CHANGE", confidence=0.85, reasoning="Goal modification detected")
+
+        # Correction detection
+        correction_patterns = ["actually", "i meant", "not that", "no,", "no ", "wrong", "i said"]
+        if any(p in text_lower for p in correction_patterns):
+            goal_change_hints = ["instead", "rather", "change to", "switch to", "find .* instead"]
+            if any(re.search(p, text_lower) for p in goal_change_hints):
+                return Classification(category="GOAL_CHANGE", confidence=0.85, reasoning="Goal change with correction pattern")
+            extracted = self._extract_constraint_changes(text_lower)
+            return Classification(category="CORRECTION", confidence=0.85, reasoning="Correction pattern detected", details=extracted)
 
         # Constraint change detection (numbers, budget, dates, people)
         constraint_patterns = [
@@ -141,20 +153,23 @@ class MockProvider(LLMProvider):
             return Classification(category="CONSTRAINT_CHANGE", confidence=0.85, reasoning="Constraint modification detected",
                                   details=self._extract_constraint_changes(text_lower))
 
-        # Correction detection
-        correction_patterns = ["actually", "i meant", "not that", "no,", "no ", "wrong", "i said"]
-        if any(p in text_lower for p in correction_patterns):
-            # Check if it's a goal change vs simple correction
-            goal_change_hints = ["instead", "rather", "change to", "switch to", "find .* instead"]
-            if any(re.search(p, text_lower) for p in goal_change_hints):
-                return Classification(category="GOAL_CHANGE", confidence=0.85, reasoning="Goal change with correction pattern")
-            extracted = self._extract_constraint_changes(text_lower)
-            return Classification(category="CORRECTION", confidence=0.85, reasoning="Correction pattern detected", details=extracted)
+        # Question detection
+        question_markers = ["why", "how", "what", "when", "where", "which", "can you explain", "tell me why", "?"]
+        if any(text_lower.startswith(q) for q in ["why", "how", "what", "when", "where", "which"]) or text_lower.endswith("?"):
+            return Classification(category="QUESTION", confidence=0.85, reasoning="Question pattern detected")
 
-        # Goal change (broader changes)
-        goal_patterns = ["instead of", "rather than", "switch to", "change the plan", "different", "hostels instead", "find .* instead"]
-        if any(re.search(p, text_lower) for p in goal_patterns):
-            return Classification(category="GOAL_CHANGE", confidence=0.8, reasoning="Goal modification detected")
+        # Topic pivot check: if active context is travel and user utterance introduces a non-travel domain
+        travel_keywords = {"trip", "travel", "tour", "hotel", "hotels", "hostel", "hostels", "itinerary", "stay", "visit", "vacation", "holiday", "budget", "walking", "city", "chennai", "bangalore", "mumbai", "delhi", "goa", "jaipur", "hyderabad"}
+        has_travel_terms = bool(words_in_text.intersection(travel_keywords))
+        context_lower = context.lower()
+        is_context_travel = any(k in context_lower for k in ["trip", "chennai", "hotel", "itinerary", "budget"])
+
+        if is_context_travel and not has_travel_terms and len(words_in_text) >= 3:
+            return Classification(category="NEW_GOAL", confidence=0.9, reasoning="Non-travel topic pivot detected while travel plan was active")
+
+        # Fallback: if input has no travel keywords and is a substantial sentence, treat as new goal
+        if not has_travel_terms and len(words_in_text) > 3:
+            return Classification(category="NEW_GOAL", confidence=0.8, reasoning="New request/topic detected")
 
         # Default: treat as constraint change if it contains useful info
         if len(text_lower.split()) > 3:
@@ -166,6 +181,37 @@ class MockProvider(LLMProvider):
         """Generate a structured plan based on the goal and constraints."""
         goal_lower = goal.lower()
 
+        # Check if this request is a travel trip goal or general query/non-travel request
+        travel_keywords = ["trip", "travel", "tour", "hotel", "itinerary", "stay", "visit", "vacation", "holiday", "chennai", "bangalore", "mumbai", "delhi", "goa", "jaipur", "hyderabad"]
+        is_travel_request = any(k in goal_lower for k in travel_keywords) or bool(constraints.get("city"))
+
+        if not is_travel_request:
+            tasks = [
+                {
+                    "id": "search_info",
+                    "name": "Search information",
+                    "description": f"Search for relevant information regarding: {goal}",
+                    "tool": "database_query",
+                    "input": {"query_type": "general_search", "query": goal},
+                    "dependencies": [],
+                    "priority": 10,
+                },
+                {
+                    "id": "synthesize_response",
+                    "name": "Synthesize response",
+                    "description": f"Analyze findings and formulate answer for: {goal}",
+                    "tool": "database_query",
+                    "input": {"query_type": "synthesize", "query": goal},
+                    "dependencies": ["search_info"],
+                    "priority": 8,
+                },
+            ]
+            return PlanSpec(
+                goal_summary=goal,
+                constraints={},
+                tasks=tasks,
+            )
+
         # Extract key parameters
         city = constraints.get("city", self._extract_city(goal_lower))
         budget = constraints.get("budget", self._extract_number(goal_lower, "budget"))
@@ -174,7 +220,7 @@ class MockProvider(LLMProvider):
         max_walking = constraints.get("max_walking", None)
 
         if not city:
-            city = "chennai"  # default for demo
+            city = "chennai"  # default for travel demo
         if not budget:
             budget = 15000
         if not duration:
@@ -294,37 +340,65 @@ class MockProvider(LLMProvider):
 
     async def generate_response(self, task_results: list[dict], goal: str, context: str = "") -> str:
         """Generate a natural language response from task results."""
-        parts = [f"I've been working on your request: {goal}\n"]
+        direct_answers: list[str] = []
+        travel_parts: list[str] = []
+        found_any = False
 
         for result in task_results:
-            name = result.get("name", "")
+            if not isinstance(result, dict):
+                continue
             output = result.get("output", {})
             status = result.get("status", "")
 
             if status == "COMPLETED" and output:
-                if "destinations" in output:
-                    count = output.get("count", 0)
-                    places = output.get("destinations", [])[:3]
-                    parts.append(f"🏛️ Found {count} destinations. Top picks: {', '.join(p['name'] for p in places)}")
-                elif "hotels" in output:
-                    count = output.get("count", 0)
-                    hotels = output.get("hotels", [])[:3]
-                    parts.append(f"🏨 Found {count} hotels. Best rated: {', '.join(h['name'] for h in hotels)}")
-                elif "activities" in output:
-                    count = output.get("count", 0)
-                    acts = output.get("activities", [])[:3]
-                    parts.append(f"🎯 Found {count} activities. Highlights: {', '.join(a['name'] for a in acts)}")
-                elif "total_estimated" in output:
-                    total = output.get("total_estimated", 0)
-                    per_person = output.get("per_person", 0)
-                    within = output.get("within_budget", True)
-                    status_text = "within budget ✅" if within else "over budget ⚠️"
-                    parts.append(f"💰 Total estimated: ₹{total:,.0f} (₹{per_person:,.0f}/person) — {status_text}")
+                if isinstance(output, dict):
+                    ans = output.get("answer")
+                    res = output.get("results")
+                    if ans and isinstance(ans, str) and not ans.startswith("Synthesized response for:"):
+                        if ans not in direct_answers:
+                            direct_answers.append(ans)
+                        found_any = True
+                    elif res and isinstance(res, str) and not res.startswith("Retrieved current relevant information for:"):
+                        if res not in direct_answers:
+                            direct_answers.append(res)
+                        found_any = True
+                    elif "destinations" in output:
+                        found_any = True
+                        count = output.get("count", 0)
+                        places = output.get("destinations", [])[:3]
+                        p_names = [p.get("name", str(p)) if isinstance(p, dict) else str(p) for p in places if p]
+                        travel_parts.append(f"🏛️ Found {count} destinations. Top picks: {', '.join(p_names)}")
+                    elif "hotels" in output:
+                        found_any = True
+                        count = output.get("count", 0)
+                        hotels = output.get("hotels", [])[:3]
+                        h_names = [h.get("name", str(h)) if isinstance(h, dict) else str(h) for h in hotels if h]
+                        travel_parts.append(f"🏨 Found {count} hotels. Best rated: {', '.join(h_names)}")
+                    elif "activities" in output:
+                        found_any = True
+                        count = output.get("count", 0)
+                        acts = output.get("activities", [])[:3]
+                        a_names = [a.get("name", str(a)) if isinstance(a, dict) else str(a) for a in acts if a]
+                        travel_parts.append(f"🎯 Found {count} activities. Highlights: {', '.join(a_names)}")
+                    elif "total_estimated" in output:
+                        found_any = True
+                        total = output.get("total_estimated", 0)
+                        per_person = output.get("per_person", 0)
+                        within = output.get("within_budget", True)
+                        status_text = "within budget ✅" if within else "over budget ⚠️"
+                        travel_parts.append(f"💰 Total estimated: ₹{total:,.0f} (₹{per_person:,.0f}/person) — {status_text}")
+                else:
+                    found_any = True
+                    direct_answers.append(str(output))
 
-        if len(parts) == 1:
-            parts.append("I'm still working on the details. I'll have results shortly.")
-
-        return "\n".join(parts)
+        if direct_answers:
+            return "\n".join(direct_answers)
+        elif travel_parts:
+            return f"I've completed planning for your request: {goal}\n" + "\n".join(travel_parts)
+        elif found_any:
+            return f"I analyzed your request regarding '{goal}'. In offline Mock Mode, answers are available for curated test queries. To get live dynamic answers for any random question, set GOOGLE_API_KEY in .env."
+        else:
+            return f"I processed your request regarding '{goal}'. To get live dynamic answers for any random question, set GOOGLE_API_KEY in .env."
 
     # -- Helpers -----------------------------------------------------------
 
