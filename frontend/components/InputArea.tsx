@@ -7,6 +7,7 @@ import { useSpeechRecognition } from "../hooks/useSpeechRecognition";
 interface InputAreaProps {
   onSend: (text: string) => void;
   disabled?: boolean;
+  onCancelSpeech?: () => void;
 }
 
 const DEMO_PROMPTS = [
@@ -16,7 +17,7 @@ const DEMO_PROMPTS = [
   { label: "4. Interrupt (New Goal)", text: "Forget the trip. Help me prepare for an interview instead." },
 ];
 
-export function InputArea({ onSend, disabled }: InputAreaProps) {
+export function InputArea({ onSend, disabled, onCancelSpeech }: InputAreaProps) {
   const [text, setText] = useState("");
 
   const handleFinalTranscript = useCallback(
@@ -61,6 +62,7 @@ export function InputArea({ onSend, disabled }: InputAreaProps) {
     if (status === "listening") {
       stopListening();
     } else {
+      onCancelSpeech?.();
       startListening();
     }
   };

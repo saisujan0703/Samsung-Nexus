@@ -1,15 +1,29 @@
 "use client";
 
 import React from "react";
-import { Activity, Radio, RefreshCw } from "lucide-react";
+import { Activity, Radio, RefreshCw, Volume2, VolumeX, Square } from "lucide-react";
 
 interface HeaderProps {
   connected: boolean;
   sessionId: string;
   onReset: () => void;
+  isSpeaking?: boolean;
+  isMuted?: boolean;
+  toggleMute?: () => void;
+  cancelSpeech?: () => void;
+  isTtsSupported?: boolean;
 }
 
-export function Header({ connected, sessionId, onReset }: HeaderProps) {
+export function Header({
+  connected,
+  sessionId,
+  onReset,
+  isSpeaking,
+  isMuted,
+  toggleMute,
+  cancelSpeech,
+  isTtsSupported = true,
+}: HeaderProps) {
   return (
     <header className="glass-panel sticky top-0 z-50 px-6 py-3.5 border-b border-slate-800 flex items-center justify-between">
       <div className="flex items-center gap-3">
@@ -31,7 +45,42 @@ export function Header({ connected, sessionId, onReset }: HeaderProps) {
         </div>
       </div>
 
-      <div className="flex items-center gap-4">
+      <div className="flex items-center gap-3 md:gap-4">
+        {/* Speaking indicator and Stop Speech button */}
+        {isSpeaking && (
+          <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-sky-500/20 border border-sky-400/50 text-sky-300 animate-pulse text-xs font-semibold">
+            <Volume2 className="w-3.5 h-3.5 text-sky-400 animate-bounce" />
+            <span className="hidden sm:inline">SURU is speaking...</span>
+            {cancelSpeech && (
+              <button
+                type="button"
+                onClick={cancelSpeech}
+                title="Stop Speech"
+                className="ml-1 px-2 py-0.5 rounded bg-rose-500/30 hover:bg-rose-500/50 text-rose-200 border border-rose-400/40 text-[11px] font-bold flex items-center gap-1 transition-colors"
+              >
+                <Square className="w-2.5 h-2.5 fill-current" />
+                <span>Stop</span>
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* TTS Mute / Unmute Toggle */}
+        {isTtsSupported && toggleMute && (
+          <button
+            type="button"
+            onClick={toggleMute}
+            title={isMuted ? "Unmute Voice Output" : "Mute Voice Output"}
+            className={`p-2 rounded-lg border text-xs font-medium transition-colors ${
+              isMuted
+                ? "bg-rose-500/20 border-rose-500/40 text-rose-400"
+                : "bg-slate-800/80 hover:bg-slate-700 border-slate-700/60 text-cyan-400"
+            }`}
+          >
+            {isMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
+          </button>
+        )}
+
         {/* Connection status */}
         <div className="flex items-center gap-2 px-3 py-1.5 rounded-full glass-card border border-slate-700/50">
           <span className="relative flex h-2.5 w-2.5">

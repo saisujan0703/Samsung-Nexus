@@ -24,6 +24,11 @@ export default function Home() {
     activeInterruption,
     sendUserInput,
     resetSession,
+    isSpeaking,
+    isMuted,
+    toggleMute,
+    cancelSpeech,
+    isTtsSupported,
   } = useNexusWebSocket();
 
   return (
@@ -33,6 +38,11 @@ export default function Home() {
         connected={connected}
         sessionId={sessionId}
         onReset={resetSession}
+        isSpeaking={isSpeaking}
+        isMuted={isMuted}
+        toggleMute={toggleMute}
+        cancelSpeech={cancelSpeech}
+        isTtsSupported={isTtsSupported}
       />
 
       {/* Main Operations Grid */}
@@ -58,7 +68,11 @@ export default function Home() {
             <Transcript messages={messages} />
           </div>
           <div className="shrink-0">
-            <InputArea onSend={sendUserInput} disabled={!connected} />
+            <InputArea
+              onSend={sendUserInput}
+              disabled={!connected}
+              onCancelSpeech={cancelSpeech}
+            />
           </div>
         </div>
 

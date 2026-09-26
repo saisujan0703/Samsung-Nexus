@@ -9,11 +9,20 @@ import {
   Task,
   TranscriptMessage,
 } from "../lib/types";
+import { useSpeechSynthesis } from "./useSpeechSynthesis";
 
 const BACKEND_HTTP = process.env.NEXT_PUBLIC_BACKEND_HTTP || "http://localhost:8000";
 const BACKEND_WS = process.env.NEXT_PUBLIC_BACKEND_WS || "ws://localhost:8000";
 
 export function useNexusWebSocket() {
+  const {
+    isSupported: isTtsSupported,
+    isSpeaking,
+    isMuted,
+    speak,
+    cancel: cancelSpeech,
+    toggleMute,
+  } = useSpeechSynthesis();
   const [sessionId, setSessionId] = useState<string>("");
   const [connected, setConnected] = useState<boolean>(false);
   const [agentState, setAgentState] = useState<AgentState>("IDLE");
@@ -264,36 +273,47 @@ export function useNexusWebSocket() {
         break;
 
       case "response_completed":
-        setMessages((prev) => {
-          if (!prev.length) return prev;
-          const updated = [...prev];
-          const last = updated[updated.length - 1];
-          if (last.role === "assistant" && msg.data?.text) {
-            last.content = msg.data.text;
-          }
-          return updated;
-        });
+        if (msg.data?.text) {
+          const finalResponseText = msg.data.text;
+          setMessages((prev) => {
+            if (!prev.length) return prev;
+            const updated = [...prev];
+            const last = updated[updated.length - 1];
+            if (last.role === "assistant") {
+              last.content = finalResponseText;
+            }
+            return updated;
+          });
+          speak(finalResponseText);
+        }
         break;
     }
   };
 
   // Send text to backend
-  const sendUserInput = useCallback((text: string) => {
-    if (!text.trim()) return;
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: "user_input", text }));
-    } else {
-      // Fallback to REST
-      fetch(`${BACKEND_HTTP}/api/session/${sessionId}/input`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text }),
-      }).catch(console.error);
-    }
-  }, [sessionId]);
+  const sendUserInput = useCallback(
+    (text: string) => {
+      if (!text.trim()) return;
+      // Immediately silence any active TTS speech when user sends input
+      cancelSpeech();
+
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({ type: "user_input", text }));
+      } else {
+        // Fallback to REST
+        fetch(`${BACKEND_HTTP}/api/session/${sessionId}/input`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text }),
+        }).catch(console.error);
+      }
+    },
+    [cancelSpeech, sessionId]
+  );
 
   // Restart session
   const resetSession = useCallback(async () => {
+    cancelSpeech();
     setMessages([]);
     setTasks([]);
     setPlanDiff(null);
@@ -302,7 +322,7 @@ export function useNexusWebSocket() {
     setGoalSummary("");
     setConstraints({});
     await initSession();
-  }, [initSession]);
+  }, [cancelSpeech, initSession]);
 
   return {
     sessionId,
@@ -317,5 +337,11 @@ export function useNexusWebSocket() {
     activeInterruption,
     sendUserInput,
     resetSession,
+    // TTS Voice Output properties
+    isSpeaking,
+    isMuted,
+    toggleMute,
+    cancelSpeech,
+    isTtsSupported,
   };
 }
