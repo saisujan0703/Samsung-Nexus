@@ -11,11 +11,13 @@ export type SpeechRecognitionStatus =
 
 interface UseSpeechRecognitionOptions {
   onFinalTranscript?: (transcript: string) => void;
+  onSpeechStart?: () => void;
   lang?: string;
 }
 
 export function useSpeechRecognition({
   onFinalTranscript,
+  onSpeechStart,
   lang = "en-US",
 }: UseSpeechRecognitionOptions = {}) {
   const [isSupported, setIsSupported] = useState<boolean>(true);
@@ -82,6 +84,9 @@ export function useSpeechRecognition({
 
       recognition.onstart = () => {
         setStatus("listening");
+        if (onSpeechStart) {
+          onSpeechStart();
+        }
       };
 
       recognition.onresult = (event: any) => {

@@ -201,3 +201,33 @@ async def test_session_memory_get():
     assert orch_exp is None
     assert bus_exp is None
 
+
+@pytest.mark.asyncio
+async def test_speech_started_voice_interruption():
+    """Verify handle_speech_started() and speech-start voice interruption flow."""
+    from backend.memory.session_memory import session_memory
+    from backend.agent.orchestrator import AgentState
+
+    session_id = "test_speech_int"
+    orchestrator, event_bus, _ = await session_memory.get_or_create(session_id)
+
+    # 1. Start initial goal
+    await orchestrator.handle_user_input("Plan a 3-day Chennai trip for 15000 rupees.")
+    assert orchestrator.state in (AgentState.EXECUTING, AgentState.THINKING)
+
+    # 2. Simulate speech_started signal while agent is active
+    await orchestrator.handle_speech_started()
+    assert orchestrator.state == AgentState.INTERRUPTED
+
+    # 3. Followed by user interruption transcript
+    interruption_text = "Wait. I am travelling with my parents. Avoid places requiring lots of walking."
+    res = await orchestrator.handle_user_input(interruption_text)
+
+    assert res["status"] == "replanned"
+    assert "diff" in res
+
+    # Clean up
+    await orchestrator.executor.stop()
+    await session_memory.delete(session_id)
+
+

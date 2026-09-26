@@ -147,9 +147,9 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                 asyncio.create_task(orchestrator.handle_image_upload(image_data, prompt))
 
             elif msg_type == "speech_started":
-                # User started speaking — instantly notify orchestrator if speaking
-                if orchestrator.state.value == "SPEAKING":
-                    orchestrator.response_manager.cancel_response()
+                # User started speaking — instantly notify orchestrator to handle interruption
+                import asyncio
+                asyncio.create_task(orchestrator.handle_speech_started())
 
     except WebSocketDisconnect:
         await realtime_manager.disconnect(session_id, websocket)

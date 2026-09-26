@@ -108,12 +108,29 @@ class Orchestrator:
                 AgentState.SPEAKING,
                 AgentState.THINKING,
                 AgentState.REPLANNING,
+                AgentState.INTERRUPTED,
             )
 
             if is_active:
                 return await self._handle_interruption(text)
             else:
                 return await self._handle_new_goal(text)
+
+    async def handle_speech_started(self) -> None:
+        """Process an immediate user speech onset signal from WebSocket."""
+        await self.event_bus.emit(
+            EventType.USER_SPEECH_STARTED,
+            session_id=self.session_id,
+        )
+        if self.state in (
+            AgentState.SPEAKING,
+            AgentState.EXECUTING,
+            AgentState.THINKING,
+            AgentState.REPLANNING,
+        ):
+            if self.state == AgentState.SPEAKING:
+                self.response_manager.cancel_response()
+            await self.set_state(AgentState.INTERRUPTED, reason="user_speech_started")
 
     async def _handle_interruption(self, text: str) -> dict[str, Any]:
         """Process a live user interruption while agent is active."""

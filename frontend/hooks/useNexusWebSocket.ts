@@ -41,6 +41,19 @@ export function useNexusWebSocket() {
 
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const activeResponseIdRef = useRef<number>(0);
+
+  // Send fast-path speech_started notification on speech onset
+  const sendSpeechStarted = useCallback(() => {
+    // 1. Instantly silence browser TTS speech locally
+    cancelSpeech();
+    // 2. Increment active response guard ID so late responses from superseded execution are discarded
+    activeResponseIdRef.current += 1;
+    // 3. Transmit speech_started event over WebSocket to notify backend
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: "speech_started" }));
+    }
+  }, [cancelSpeech]);
 
   // Initialize or fetch session
   const initSession = useCallback(async () => {
@@ -249,6 +262,7 @@ export function useNexusWebSocket() {
         break;
 
       case "response_started":
+        activeResponseIdRef.current += 1;
         setMessages((prev) => [
           ...prev,
           {
@@ -275,6 +289,7 @@ export function useNexusWebSocket() {
       case "response_completed":
         if (msg.data?.text) {
           const finalResponseText = msg.data.text;
+          const currentResponseId = activeResponseIdRef.current;
           setMessages((prev) => {
             if (!prev.length) return prev;
             const updated = [...prev];
@@ -284,7 +299,12 @@ export function useNexusWebSocket() {
             }
             return updated;
           });
-          speak(finalResponseText);
+          // Speak ONLY if response was not superseded by a new user interruption
+          if (currentResponseId === activeResponseIdRef.current) {
+            speak(finalResponseText);
+          } else {
+            console.log("[TTS] Discarded stale response superseded by interruption");
+          }
         }
         break;
     }
@@ -294,8 +314,9 @@ export function useNexusWebSocket() {
   const sendUserInput = useCallback(
     (text: string) => {
       if (!text.trim()) return;
-      // Immediately silence any active TTS speech when user sends input
+      // Immediately silence any active TTS speech and increment response guard ID
       cancelSpeech();
+      activeResponseIdRef.current += 1;
 
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
         wsRef.current.send(JSON.stringify({ type: "user_input", text }));
@@ -314,6 +335,7 @@ export function useNexusWebSocket() {
   // Restart session
   const resetSession = useCallback(async () => {
     cancelSpeech();
+    activeResponseIdRef.current += 1;
     setMessages([]);
     setTasks([]);
     setPlanDiff(null);
@@ -336,6 +358,7 @@ export function useNexusWebSocket() {
     events,
     activeInterruption,
     sendUserInput,
+    sendSpeechStarted,
     resetSession,
     // TTS Voice Output properties
     isSpeaking,

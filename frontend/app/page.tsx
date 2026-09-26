@@ -23,6 +23,7 @@ export default function Home() {
     events,
     activeInterruption,
     sendUserInput,
+    sendSpeechStarted,
     resetSession,
     isSpeaking,
     isMuted,
@@ -72,6 +73,7 @@ export default function Home() {
               onSend={sendUserInput}
               disabled={!connected}
               onCancelSpeech={cancelSpeech}
+              onSpeechStart={sendSpeechStarted}
             />
           </div>
         </div>

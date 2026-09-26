@@ -8,6 +8,7 @@ interface InputAreaProps {
   onSend: (text: string) => void;
   disabled?: boolean;
   onCancelSpeech?: () => void;
+  onSpeechStart?: () => void;
 }
 
 const DEMO_PROMPTS = [
@@ -17,18 +18,33 @@ const DEMO_PROMPTS = [
   { label: "4. Interrupt (New Goal)", text: "Forget the trip. Help me prepare for an interview instead." },
 ];
 
-export function InputArea({ onSend, disabled, onCancelSpeech }: InputAreaProps) {
+export function InputArea({ onSend, disabled, onCancelSpeech, onSpeechStart }: InputAreaProps) {
   const [text, setText] = useState("");
+  const lastSubmittedRef = React.useRef<{ text: string; time: number }>({ text: "", time: 0 });
 
   const handleFinalTranscript = useCallback(
     (spokenText: string) => {
-      if (!spokenText.trim() || disabled) return;
-      setText(spokenText);
-      onSend(spokenText);
+      const trimmed = spokenText.trim();
+      if (!trimmed || disabled) return;
+
+      // Duplicate transcript guard: ignore duplicate final submissions within 800ms
+      const now = Date.now();
+      if (lastSubmittedRef.current.text === trimmed && now - lastSubmittedRef.current.time < 800) {
+        return;
+      }
+      lastSubmittedRef.current = { text: trimmed, time: now };
+
+      setText(trimmed);
+      onSend(trimmed);
       setTimeout(() => setText(""), 400);
     },
     [disabled, onSend]
   );
+
+  const handleSpeechStart = useCallback(() => {
+    onCancelSpeech?.();
+    onSpeechStart?.();
+  }, [onCancelSpeech, onSpeechStart]);
 
   const {
     isSupported,
@@ -40,6 +56,7 @@ export function InputArea({ onSend, disabled, onCancelSpeech }: InputAreaProps) 
     reset,
   } = useSpeechRecognition({
     onFinalTranscript: handleFinalTranscript,
+    onSpeechStart: handleSpeechStart,
   });
 
   // Display live interim transcript in input box while listening
