@@ -69,6 +69,16 @@ class Orchestrator:
         self._execution_monitor_task: asyncio.Task | None = None
         self._lock = asyncio.Lock()
 
+        # Evaluation & Latency Metrics
+        self.metrics: dict[str, Any] = {
+            "input_count": 0,
+            "interruption_count": 0,
+            "last_input_ts": None,
+            "last_interruption_ts": None,
+            "last_planning_duration_ms": 0.0,
+            "last_response_generation_ms": 0.0,
+        }
+
     # -- State Management --------------------------------------------------
 
     async def set_state(self, new_state: AgentState, reason: str = "") -> None:
@@ -549,9 +559,13 @@ class Orchestrator:
             "session_id": self.session_id,
             "state": self.state.value,
             "previous_state": self.previous_state.value,
+            "plan_version": self.plan_version,
             "goal": self.goal_manager.to_dict(),
             "context": self.context_manager.to_dict(),
             "task_graph": self.task_graph.to_dict(),
             "running_tasks": self.executor.get_running_task_ids(),
+            "completed_tasks": [t.id for t in self.task_graph.get_tasks_by_status(TaskStatus.COMPLETED)],
+            "cancelled_tasks": [t.id for t in self.task_graph.get_tasks_by_status(TaskStatus.CANCELLED)],
             "interruption_count": self.interruption_manager.get_interruption_count(),
+            "metrics": dict(self.metrics),
         }

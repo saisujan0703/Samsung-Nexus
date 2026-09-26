@@ -434,3 +434,22 @@ docker-compose up --build
 - Tool parameters sanitized
 - Rate limiting on API endpoints
 - CORS configured for frontend origin only
+
+## 14. Evaluation Architecture & Deterministic Scenarios
+
+SURU AI includes a built-in evaluation framework in `backend/evaluation/` covering 9 deterministic scenario benchmarks:
+
+1. **Scenario 1 — Basic Goal**: Single prompt goal extraction and DAG execution.
+2. **Scenario 2 — Constraint Change**: Dynamic constraint update and PlanDiff selective cancellation.
+3. **Scenario 3 — Question Interruption**: Side question answering while preserving task graph state.
+4. **Scenario 4 — Task Cancellation**: Specific task cancellation during execution.
+5. **Scenario 5 — Goal Pivot**: Full `NEW_GOAL` pivot with stale task superseding.
+6. **Scenario 6 — Rapid Interruptions**: Rapid consecutive updates with single authoritative final state.
+7. **Scenario 7 — Voice Onset Interruption**: Fast-path `speech_started` TTS silencing and state transition.
+8. **Scenario 8 — Multimodal Grounding**: Image upload analysis and visual context grounding.
+9. **Scenario 9 — Session Reconnect**: WebSocket reconnect state resynchronization.
+
+Evaluation endpoints:
+- `GET /api/session/{session_id}/snapshot`
+- `GET /api/session/{session_id}/events`
+- `POST /api/evaluate/{scenario_id}`

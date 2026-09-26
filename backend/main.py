@@ -114,6 +114,43 @@ async def post_image(session_id: str, request: ImageUploadRequest) -> dict[str, 
     return result
 
 
+@app.get("/api/session/{session_id}/snapshot")
+async def get_session_snapshot(session_id: str) -> dict[str, Any]:
+    """Canonical serializable snapshot of agent state for evaluation."""
+    orchestrator, _ = await session_memory.get(session_id)
+    if not orchestrator:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return orchestrator.get_snapshot()
+
+
+@app.get("/api/session/{session_id}/events")
+async def get_session_events(session_id: str, limit: int = 100) -> dict[str, Any]:
+    """Retrieve recorded event bus log for evaluation."""
+    orchestrator, event_bus = await session_memory.get(session_id)
+    if not orchestrator or not event_bus:
+        raise HTTPException(status_code=404, detail="Session not found")
+    events = event_bus.get_events(session_id=session_id, limit=limit)
+    return {
+        "session_id": session_id,
+        "count": len(events),
+        "events": [e.model_dump() for e in events],
+    }
+
+
+@app.post("/api/evaluate/{scenario_id}")
+async def run_evaluation_scenario(scenario_id: str) -> dict[str, Any]:
+    """Run evaluation scenario harness and return structured metrics."""
+    from backend.evaluation.harness import evaluation_harness
+    if scenario_id.lower() == "all":
+        results = await evaluation_harness.run_all()
+        return {"scenarios": [r.model_dump() for r in results]}
+    else:
+        result = await evaluation_harness.run_scenario(scenario_id)
+        if not result:
+            raise HTTPException(status_code=404, detail=f"Scenario '{scenario_id}' not found")
+        return result.model_dump()
+
+
 # ---------------------------------------------------------------------------
 # WebSocket Endpoint
 # ---------------------------------------------------------------------------
@@ -129,7 +166,17 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
 
     try:
         while True:
-            data = await websocket.receive_json()
+            try:
+                data = await websocket.receive_json()
+            except Exception:
+                # Handle malformed / non-JSON websocket messages gracefully
+                await websocket.send_json({"type": "error", "error": "Invalid JSON frame"})
+                continue
+
+            if not isinstance(data, dict):
+                await websocket.send_json({"type": "error", "error": "JSON payload must be an object"})
+                continue
+
             msg_type = data.get("type", "")
 
             if msg_type == "ping":
@@ -137,21 +184,28 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
 
             elif msg_type == "user_input":
                 text = data.get("text", "")
-                if text:
-                    # Async task so websocket stays responsive to incoming interruptions
+                if text and isinstance(text, str):
                     import asyncio
                     asyncio.create_task(orchestrator.handle_user_input(text))
+                else:
+                    await websocket.send_json({"type": "warning", "message": "Empty user_input ignored"})
 
             elif msg_type == "image_upload":
                 image_data = data.get("image_data", "")
                 prompt = data.get("prompt", "")
-                import asyncio
-                asyncio.create_task(orchestrator.handle_image_upload(image_data, prompt))
+                if image_data:
+                    import asyncio
+                    asyncio.create_task(orchestrator.handle_image_upload(image_data, prompt))
+                else:
+                    await websocket.send_json({"type": "warning", "message": "Empty image_upload ignored"})
 
             elif msg_type == "speech_started":
-                # User started speaking — instantly notify orchestrator to handle interruption
                 import asyncio
                 asyncio.create_task(orchestrator.handle_speech_started())
+
+            else:
+                # Safely ignore unknown event types without dropping connection
+                await websocket.send_json({"type": "ack", "received": msg_type, "status": "ignored"})
 
     except WebSocketDisconnect:
         await realtime_manager.disconnect(session_id, websocket)
