@@ -44,10 +44,10 @@ export default function Home() {
           {/* Core Innovation Callout */}
           <div className="glass-panel rounded-2xl p-4.5 border border-slate-800 text-xs flex flex-col gap-2">
             <span className="text-[10px] font-bold text-cyan-400 uppercase tracking-wider">
-              NEXUS Core Innovation
+              SURU AI Core Innovation
             </span>
             <p className="text-slate-300 font-medium leading-relaxed">
-              When interrupted, NEXUS does not restart. It classifies the intent, preserves valid findings, calculates a <span className="text-cyan-300 font-bold">Plan Diff</span>, selectively cancels only obsolete tasks, and resumes execution seamlessly.
+              When interrupted, SURU AI does not restart. It classifies the intent, preserves valid findings, calculates a <span className="text-cyan-300 font-bold">Plan Diff</span>, selectively cancels only obsolete tasks, and resumes execution seamlessly.
             </p>
           </div>
         </div>

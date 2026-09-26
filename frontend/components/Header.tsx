@@ -19,14 +19,14 @@ export function Header({ connected, sessionId, onReset }: HeaderProps) {
         <div>
           <div className="flex items-center gap-2">
             <h1 className="text-lg font-bold tracking-tight bg-gradient-to-r from-cyan-400 via-sky-300 to-indigo-300 bg-clip-text text-transparent">
-              NEXUS
+              SURU AI
             </h1>
             <span className="text-[10px] uppercase tracking-widest font-semibold px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 border border-slate-700/60">
               Console v1.0
             </span>
           </div>
           <p className="text-xs text-slate-400 font-medium">
-            Interruptible Real-Time Multimodal Agent
+            Interruptible Real-Time Agent
           </p>
         </div>
       </div>

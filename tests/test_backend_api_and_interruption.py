@@ -168,3 +168,36 @@ async def test_end_to_end_interruptible_flow():
     # Clean up
     await orchestrator.executor.stop()
     await session_memory.delete(session_id)
+
+
+@pytest.mark.asyncio
+async def test_session_memory_get():
+    """Verify session_memory.get() return values for active, missing, and expired sessions."""
+    from backend.memory.session_memory import SessionMemory
+
+    mem = SessionMemory(ttl_seconds=1)
+    session_id = "test_mem_s1"
+
+    # Non-existent session returns (None, None)
+    orch, bus = await mem.get("non_existent")
+    assert orch is None
+    assert bus is None
+
+    # Created session returns orchestrator and event_bus
+    orch1, bus1, is_new = await mem.get_or_create(session_id)
+    assert is_new is True
+    assert orch1 is not None
+    assert bus1 is not None
+
+    orch2, bus2 = await mem.get(session_id)
+    assert orch2 is orch1
+    assert bus2 is bus1
+
+    # Wait for TTL to expire
+    await asyncio.sleep(1.1)
+
+    # Expired session returns (None, None) and is evicted
+    orch_exp, bus_exp = await mem.get(session_id)
+    assert orch_exp is None
+    assert bus_exp is None
+

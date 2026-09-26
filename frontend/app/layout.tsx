@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "NEXUS — Interruptible Real-Time Multimodal Agent",
-  description: "An AI agent that doesn't restart when you change your mind.",
+  title: "SURU AI: Interruptible Real-Time Agent",
+  description: "An AI agent that doesn't restart when you change your mind. Wake phrase: Hey SURU",
 };
 
 export default function RootLayout({

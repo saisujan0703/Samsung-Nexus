@@ -1,5 +1,5 @@
 """
-NEXUS Session Memory — In-memory session registry and cache.
+SURU AI Session Memory — In-memory session registry and cache.
 
 Maintains active Orchestrator instances and metadata keyed by session_id.
 """
@@ -51,8 +51,13 @@ class SessionMemory:
         async with self._lock:
             info = self._sessions.get(session_id)
             if info:
-                info.touch()
-                return info.orchestrator, info.event_bus, False
+                if time.time() - info.last_active_at > self._ttl_seconds:
+                    self._sessions.pop(session_id, None)
+                    await info.orchestrator.executor.stop()
+                    info = None
+                else:
+                    info.touch()
+                    return info.orchestrator, info.event_bus, False
 
             # Create new session components
             event_bus = EventBus()
@@ -71,6 +76,10 @@ class SessionMemory:
         async with self._lock:
             info = self._sessions.get(session_id)
             if info:
+                if time.time() - info.last_active_at > self._ttl_seconds:
+                    self._sessions.pop(session_id, None)
+                    await info.orchestrator.executor.stop()
+                    return None, None
                 info.touch()
                 return info.orchestrator, info.event_bus
             return None, None

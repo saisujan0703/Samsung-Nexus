@@ -1,10 +1,10 @@
-# NEXUS — Architecture Document
+# SURU AI — Architecture Document
 
-> **"An AI agent that doesn't restart when you change your mind."**
+> **"Hey SURU — An AI agent that doesn't restart when you change your mind."**
 
 ## 1. System Overview
 
-NEXUS is an interruptible real-time multimodal AI agent. Unlike traditional chatbots that process one request at a time, NEXUS maintains a live task graph, executes work asynchronously, and intelligently handles user interruptions without discarding useful progress.
+SURU AI is an interruptible real-time agent. Unlike traditional chatbots that process one request at a time, SURU AI maintains a live task graph, executes work asynchronously, and intelligently handles user interruptions without discarding useful progress.
 
 ```mermaid
 graph TB

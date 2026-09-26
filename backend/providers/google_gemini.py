@@ -111,7 +111,7 @@ class GeminiProvider(LLMProvider):
                 return await self._fallback_provider.classify(text, categories, context)
             raise ValueError("GOOGLE_API_KEY not configured")
 
-        prompt = f"""You are the interruption classifier for NEXUS, an interruptible real-time agent.
+        prompt = f"""You are the interruption classifier for SURU AI, an interruptible real-time agent.
 Classify the user's interruption into exactly ONE category from: {categories}.
 
 Current Goal / Context:
@@ -162,7 +162,7 @@ Respond strictly with a JSON object:
                 return await self._fallback_provider.create_plan(goal, constraints, context)
             raise ValueError("GOOGLE_API_KEY not configured")
 
-        prompt = f"""You are the task planner for NEXUS. Generate a structured execution plan.
+        prompt = f"""You are the task planner for SURU AI. Generate a structured execution plan.
 Goal: {goal}
 Constraints: {json.dumps(constraints)}
 Context: {context}
@@ -242,7 +242,7 @@ Respond strictly with JSON matching:
                 return await self._fallback_provider.generate_response(task_results, goal, context)
             raise ValueError("GOOGLE_API_KEY not configured")
 
-        prompt = f"""You are NEXUS, an interruptible real-time agent.
+        prompt = f"""You are SURU AI, an interruptible real-time agent.
 Summarize the results of the completed tasks in a natural, concise, conversational tone.
 Goal: {goal}
 Task Results: {json.dumps(task_results)}

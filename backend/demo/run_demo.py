@@ -1,5 +1,5 @@
 """
-NEXUS Demo Runner — Command-line live demonstration of interruptible agent flow.
+SURU AI Demo Runner — Command-line live demonstration of interruptible agent flow.
 
 Simulates live voice/text interactions:
 1. Goal: "Plan a 3-day Chennai trip for 15000 rupees."
@@ -20,8 +20,8 @@ from backend.realtime.events import EventType, NexusEvent
 
 def print_banner():
     print("=" * 70)
-    print("  NEXUS — Interruptible Real-Time Multimodal Agent")
-    print("  'An AI agent that doesn't restart when you change your mind.'")
+    print("  SURU AI — Interruptible Real-Time Agent")
+    print("  'Hey SURU — An AI agent that doesn't restart when you change your mind.'")
     print("=" * 70)
 
 

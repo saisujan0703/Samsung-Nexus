@@ -1,5 +1,5 @@
 """
-NEXUS Backend — FastAPI REST and WebSocket API Server.
+SURU AI Backend — FastAPI REST and WebSocket API Server.
 
 Connects client applications to the real-time interruptible agent orchestrator.
 """
@@ -18,7 +18,7 @@ from backend.realtime.session import realtime_manager
 
 
 app = FastAPI(
-    title="NEXUS — Interruptible Real-Time Agent API",
+    title="SURU AI: Interruptible Real-Time Agent API",
     description="Backend engine for interruptible multimodal AI agents",
     version="1.0.0",
 )
