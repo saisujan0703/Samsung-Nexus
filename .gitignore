@@ -38,3 +38,12 @@ htmlcov/
 
 # Docker
 docker-compose.override.yml
+
+# Database & Data
+*.db
+*.sqlite
+*.sqlite3
+data/*.db
+
+# Scratch and Temporary files
+scratch/

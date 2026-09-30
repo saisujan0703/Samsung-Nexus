@@ -11,7 +11,7 @@ import asyncio
 import random
 from typing import Any
 
-from backend.tools.base import BaseTool, ToolResult
+from backend.tools.base import BaseTool, ToolResult, ToolResultStatus
 
 
 # ---------------------------------------------------------------------------
@@ -102,10 +102,18 @@ class DestinationSearchTool(BaseTool):
         if budget_per_person is not None:
             destinations = [d for d in destinations if d["cost_per_person"] <= budget_per_person]
 
+        count = len(destinations)
+        status = ToolResultStatus.SUCCESS_WITH_RESULTS if count > 0 else ToolResultStatus.SUCCESS_WITH_NO_RESULTS
+        summary = (
+            f"Found {count} destinations in {city.title()}"
+            if count > 0
+            else f"No destinations found in {city.title()}"
+        )
         return ToolResult(
             success=True,
-            data={"destinations": destinations, "city": city, "count": len(destinations)},
-            summary=f"Found {len(destinations)} destinations in {city.title()}",
+            status=status.value,
+            data={"destinations": destinations, "city": city, "count": count, "status": status.value},
+            summary=summary,
         )
 
 
@@ -124,7 +132,7 @@ class HotelSearchTool(BaseTool):
 
         await self._simulate_latency(2.0, cancel_event)
 
-        hotels = HOTELS_DB.get(city, HOTELS_DB["default"])
+        hotels = list(HOTELS_DB.get(city, HOTELS_DB["default"]))
 
         if max_price is not None:
             hotels = [h for h in hotels if h["price_per_night"] <= max_price]
@@ -142,11 +150,30 @@ class HotelSearchTool(BaseTool):
             h["total_cost"] = h["price_per_night"] * num_nights * num_rooms
 
         hotels.sort(key=lambda h: h["rating"], reverse=True)
+        count = len(hotels)
+
+        if count > 0:
+            status = ToolResultStatus.SUCCESS_WITH_RESULTS
+            summary = f"Found {count} hotels in {city.title()} within budget"
+        else:
+            status = ToolResultStatus.SUCCESS_WITH_NO_RESULTS
+            summary = (
+                f"No hotels found in {city.title()} within budget of ₹{max_price:,}/night"
+                if max_price
+                else f"No hotels found in {city.title()} within budget"
+            )
 
         return ToolResult(
             success=True,
-            data={"hotels": hotels, "city": city, "count": len(hotels), "num_nights": num_nights},
-            summary=f"Found {len(hotels)} hotels in {city.title()} within budget",
+            status=status.value,
+            data={
+                "hotels": hotels,
+                "city": city,
+                "count": count,
+                "num_nights": num_nights,
+                "status": status.value,
+            },
+            summary=summary,
         )
 
 
@@ -176,8 +203,17 @@ class ActivitySearchTool(BaseTool):
         if activity_type:
             activities = [a for a in activities if a["type"] == activity_type]
 
+        count = len(activities)
+        status = ToolResultStatus.SUCCESS_WITH_RESULTS if count > 0 else ToolResultStatus.SUCCESS_WITH_NO_RESULTS
+        summary = (
+            f"Found {count} activities in {city.title()}"
+            if count > 0
+            else f"No activities found in {city.title()}"
+        )
+
         return ToolResult(
             success=True,
-            data={"activities": activities, "city": city, "count": len(activities)},
-            summary=f"Found {len(activities)} activities in {city.title()}",
+            status=status.value,
+            data={"activities": activities, "city": city, "count": count, "status": status.value},
+            summary=summary,
         )

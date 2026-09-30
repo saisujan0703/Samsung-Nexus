@@ -61,9 +61,10 @@ class SessionMemory:
 
             # Create new session components
             event_bus = EventBus()
+            provider = create_provider(settings.LLM_PROVIDER)
             orchestrator = Orchestrator(
                 session_id=session_id,
-                llm_provider=self._provider,
+                llm_provider=provider,
                 tool_registry=self._tools,
                 event_bus=event_bus,
             )

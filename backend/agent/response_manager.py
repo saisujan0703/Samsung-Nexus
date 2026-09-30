@@ -45,7 +45,12 @@ class ResponseManager:
             if "max_walking" in details:
                 return "Understood, filtering for low-walking spots and accessible transport."
             if "budget" in details:
-                return f"Understood, adjusting your budget limit to ₹{details['budget']:,}."
+                b_val = details["budget"]
+                try:
+                    b_int = int(str(b_val).replace(",", "").replace("₹", "").strip())
+                    return f"Understood, adjusting your budget limit to ₹{b_int:,}."
+                except (ValueError, TypeError):
+                    return f"Understood, adjusting your budget limit to ₹{b_val}."
             return "Got it, updating the plan with those new details."
         elif interruption_type == "CORRECTION":
             return "Got it, correcting that now."

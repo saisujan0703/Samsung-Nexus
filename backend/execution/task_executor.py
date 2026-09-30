@@ -161,8 +161,18 @@ class TaskExecutor:
                 status="executing",
             )
 
+            # Resolve dependency outputs to enrich input for downstream tools
+            tool_input = dict(task.input)
+            dep_outputs = {}
+            for dep_id in task.dependencies:
+                dep_task = self.graph.get_task(dep_id)
+                if dep_task and dep_task.output:
+                    dep_outputs[dep_id] = dep_task.output
+            if dep_outputs:
+                tool_input["_dependency_outputs"] = dep_outputs
+
             # Execute the tool
-            result = await tool.execute(task.input, cancel_event)
+            result = await tool.execute(tool_input, cancel_event)
 
             # Check for cancellation or stale execution
             running_info = self._running.get(task.id)

@@ -149,7 +149,7 @@ class DatabaseQueryTool(BaseTool):
                 summary=f"Itinerary check: {'valid' if not issues else f'{len(issues)} issues found'}",
             )
 
-        elif query_type == "general_search":
+        elif query_type in ("general_search", "search", "info"):
             query = params.get("query", "")
             fact = lookup_factual_answer(query)
             if fact:
@@ -161,11 +161,11 @@ class DatabaseQueryTool(BaseTool):
             else:
                 return ToolResult(
                     success=True,
-                    data={"query": query, "results": None, "found": False, "message": f"No specific factual record found for '{query}'"},
-                    summary=f"No factual data found for query: {query[:40]}",
+                    data={"query": query, "results": None, "found": False, "message": f"No specific factual record found in local database for '{query}'"},
+                    summary=f"No local database record for: {query[:40]}",
                 )
 
-        elif query_type == "synthesize":
+        elif query_type in ("synthesize", "answer"):
             query = params.get("query", "")
             fact = lookup_factual_answer(query)
             if fact:
@@ -177,12 +177,13 @@ class DatabaseQueryTool(BaseTool):
             else:
                 return ToolResult(
                     success=True,
-                    data={"query": query, "answer": None, "found": False, "message": f"Insufficient retrieved data to answer '{query}'"},
-                    summary=f"Insufficient data for query: {query[:40]}",
+                    data={"query": query, "answer": None, "found": False, "message": f"No local synthesis data for '{query}'"},
+                    summary=f"No local synthesis data for: {query[:40]}",
                 )
 
         return ToolResult(
             success=False,
-            error=f"Unknown query type: {query_type}",
-            summary="Query failed: unknown type",
+            error=f"Unsupported database query type: {query_type}",
+            summary=f"Database query type '{query_type}' is not supported.",
         )
+

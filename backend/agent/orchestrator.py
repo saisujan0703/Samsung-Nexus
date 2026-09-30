@@ -215,7 +215,10 @@ class Orchestrator:
         await self.set_state(AgentState.REPLANNING, reason="constraint_change")
 
         # 1. Update Goal constraints
-        changes = interruption.details
+        changes = dict(interruption.details) if interruption.details else {}
+        if hasattr(self.llm, "_extract_constraint_changes"):
+            for k, v in self.llm._extract_constraint_changes(interruption.raw_text).items():
+                changes.setdefault(k, v)
         if not changes:
             # Fallback extraction
             changes = {"raw_constraint_update": interruption.raw_text}
@@ -240,6 +243,11 @@ class Orchestrator:
             diff=diff,
             executor_cancel_callback=self.executor.cancel_task,
         )
+
+        # Invalidate findings of modified/cancelled tasks in context manager
+        invalid_ids = [m["task_id"] for m in diff.modify] + diff.cancel
+        if invalid_ids:
+            await self.context_manager.invalidate_findings(task_ids=invalid_ids)
 
         # 5. Resume execution with updated graph
         await self.set_state(AgentState.EXECUTING, reason="replan_applied")
@@ -295,23 +303,79 @@ class Orchestrator:
         """Complete pivot to a brand new goal."""
         self.plan_version += 1
         self.executor.plan_version = self.plan_version
+        current_version = self.plan_version
         await self.executor.stop()
         await self.set_state(AgentState.THINKING, reason="new_goal_pivot")
 
-        # Plan from scratch for new goal
+        text = interruption.raw_text
+        current_date = self.context_manager.get_current_runtime_date()
+        intent_info = await self.llm.determine_intent(
+            text,
+            context=self.context_manager.get_context_summary(),
+            current_date=current_date,
+        )
+        category = intent_info.get("category", "DIRECT_KNOWLEDGE")
+        needs_dag = intent_info.get("needs_dag", False)
+
+        if category == "SPORTS_FIXTURE_QUERY":
+            return await self._handle_sports_fixtures(text, intent_info.get("sports_params"), current_version)
+
+        if not needs_dag:
+            self.task_graph.clear()
+            await self.event_bus.emit(
+                EventType.PLAN_CREATED,
+                session_id=self.session_id,
+                goal=text,
+                task_count=0,
+                tasks=[],
+            )
+            await self.goal_manager.set_goal(summary=text, constraints={}, raw_input=text)
+            await self.context_manager.update_goal(text, {})
+
+            if self.plan_version != current_version:
+                return {"status": "new_goal_started", "tasks_count": 0, "ack": ack_speech}
+
+            await self.set_state(AgentState.SPEAKING, reason="direct_response")
+            use_grounding = category == "CURRENT_INFORMATION" or bool(intent_info.get("needs_grounding", False))
+            await self.event_bus.emit(
+                EventType.RESPONSE_STARTED,
+                session_id=self.session_id,
+                goal=text,
+            )
+            response_text = await self.llm.generate_direct_response(
+                text,
+                context=self.context_manager.get_context_summary(),
+                use_grounding=use_grounding,
+                current_date=current_date,
+            )
+            if self.plan_version == current_version:
+                await self.event_bus.emit(
+                    EventType.RESPONSE_COMPLETED,
+                    session_id=self.session_id,
+                    text=response_text,
+                )
+                await self.context_manager.add_conversation_turn("assistant", response_text)
+                await self.set_state(AgentState.IDLE, reason="response_finished")
+
+            return {"status": "new_goal_started", "tasks_count": 0, "ack": ack_speech, "response": response_text}
+
+        # Multi-step DAG goal
         tasks = await self.planner.create_plan(
-            goal=interruption.raw_text,
+            goal=text,
             constraints={},
             task_graph=self.task_graph,
             context=self.context_manager.get_context_summary(),
         )
+        initial_constraints = {}
+        if hasattr(self.planner.llm, "_extract_constraint_changes"):
+            initial_constraints = self.planner.llm._extract_constraint_changes(text)
 
         await self.goal_manager.set_goal(
-            summary=interruption.raw_text,
-            constraints=self.planner.llm._extract_constraint_changes(interruption.raw_text) if hasattr(self.planner.llm, "_extract_constraint_changes") else {},
-            raw_input=interruption.raw_text,
+            summary=text,
+            constraints=initial_constraints,
+            raw_input=text,
         )
-
+        await self.context_manager.update_goal(text, initial_constraints)
         await self.set_state(AgentState.EXECUTING, reason="new_plan_starting")
         self._ensure_execution_running()
 
@@ -341,34 +405,125 @@ class Orchestrator:
         ack_speech: str = "",
     ) -> dict[str, Any]:
         """Answer a side question without halting background work."""
-        # Speak answer
-        ans = f"Regarding your question '{interruption.raw_text}': based on current findings, {self.context_manager.get_context_summary()[:150]}."
         await self.set_state(AgentState.SPEAKING, reason="answering_question")
+        text = interruption.raw_text
+        current_date = self.context_manager.get_current_runtime_date()
+        intent_info = await self.llm.determine_intent(
+            text,
+            context=self.context_manager.get_context_summary(),
+            current_date=current_date,
+        )
+        use_grounding = (
+            intent_info.get("category") == "CURRENT_INFORMATION"
+            or bool(intent_info.get("needs_grounding", False))
+        )
         
-        # Async task to speak and resume
-        async def speak_and_resume():
+        async def answer_and_resume():
+            try:
+                ans = await self.llm.generate_direct_response(
+                    text,
+                    context=self.context_manager.get_context_summary(),
+                    use_grounding=use_grounding,
+                    current_date=current_date,
+                )
+            except Exception as e:
+                ans = f"Regarding your question '{text}': {e}"
+
             await self.response_manager.generate_task_response(
                 task_results=[{"name": "Question Answer", "status": "COMPLETED", "output": {"answer": ans}}],
-                goal=interruption.raw_text,
+                goal=text,
                 context=self.context_manager.get_context_summary(),
             )
+            await self.context_manager.add_conversation_turn("assistant", ans)
             if self.task_graph.has_active_tasks:
                 await self.set_state(AgentState.EXECUTING, reason="resume_after_question")
             else:
                 await self.set_state(AgentState.IDLE, reason="question_completed")
 
-        asyncio.create_task(speak_and_resume())
-        return {"status": "answering_question", "answer": ans, "ack": ack_speech}
+        asyncio.create_task(answer_and_resume())
+        return {
+            "status": "answering_question",
+            "answer": f"Regarding your question '{text}': checking findings...",
+            "ack": ack_speech,
+        }
 
     # -- New Goal Flow -----------------------------------------------------
 
     async def _handle_new_goal(self, text: str) -> dict[str, Any]:
-        """Initial goal creation and execution trigger."""
+        """Initial goal creation and execution trigger with adaptive routing."""
         self.plan_version += 1
         self.executor.plan_version = self.plan_version
+        current_version = self.plan_version
         await self.set_state(AgentState.THINKING, reason="initial_planning")
 
-        # 1. Initial Plan Creation
+        # 1. Semantic intent analysis: determine if DAG is required
+        current_date = self.context_manager.get_current_runtime_date()
+        intent_info = await self.llm.determine_intent(
+            text,
+            context=self.context_manager.get_context_summary(),
+            current_date=current_date,
+        )
+        category = intent_info.get("category", "DIRECT_KNOWLEDGE")
+        needs_dag = intent_info.get("needs_dag", False)
+
+        if category == "SPORTS_FIXTURE_QUERY":
+            return await self._handle_sports_fixtures(text, intent_info.get("sports_params"), current_version)
+
+        if not needs_dag:
+            # DIRECT QUERY PATH: no unnecessary DAG tasks or travel constraints
+            self.task_graph.clear()
+            await self.event_bus.emit(
+                EventType.PLAN_CREATED,
+                session_id=self.session_id,
+                goal=text,
+                task_count=0,
+                tasks=[],
+            )
+            await self.goal_manager.set_goal(
+                summary=text,
+                constraints={},
+                raw_input=text,
+            )
+            await self.context_manager.update_goal(text, {})
+
+            if self.plan_version != current_version:
+                return {"status": "interrupted", "goal": text}
+
+            await self.set_state(AgentState.SPEAKING, reason="direct_response")
+            use_grounding = category == "CURRENT_INFORMATION" or bool(intent_info.get("needs_grounding", False))
+
+            await self.event_bus.emit(
+                EventType.RESPONSE_STARTED,
+                session_id=self.session_id,
+                goal=text,
+            )
+
+            response_text = await self.llm.generate_direct_response(
+                text,
+                context=self.context_manager.get_context_summary(),
+                use_grounding=use_grounding,
+                current_date=current_date,
+            )
+
+            if self.plan_version != current_version:
+                return {"status": "interrupted", "goal": text}
+
+            await self.event_bus.emit(
+                EventType.RESPONSE_COMPLETED,
+                session_id=self.session_id,
+                text=response_text,
+            )
+            await self.context_manager.add_conversation_turn("assistant", response_text)
+            await self.set_state(AgentState.IDLE, reason="response_finished")
+
+            return {
+                "status": "completed",
+                "goal": text,
+                "response": response_text,
+                "tasks": [],
+            }
+
+        # 2. MULTI-STEP AGENT TASK: DAG planning and concurrent execution
         tasks = await self.planner.create_plan(
             goal=text,
             constraints={},
@@ -376,7 +531,6 @@ class Orchestrator:
             context=self.context_manager.get_context_summary(),
         )
 
-        # 2. Extract initial constraints for GoalManager
         initial_constraints = {}
         if hasattr(self.llm, "_extract_constraint_changes"):
             initial_constraints = self.llm._extract_constraint_changes(text)
@@ -397,6 +551,97 @@ class Orchestrator:
             "goal": text,
             "tasks": [t.to_dict() for t in tasks],
         }
+
+    async def _handle_sports_fixtures(
+        self,
+        text: str,
+        sports_params: Optional[dict[str, Any]],
+        current_version: int,
+    ) -> dict[str, Any]:
+        """Execute generic sports fixtures query and stream structured data + concise summary."""
+        from backend.tools.sports import SportsTool
+
+        self.task_graph.clear()
+        await self.event_bus.emit(
+            EventType.PLAN_CREATED,
+            session_id=self.session_id,
+            goal=text,
+            task_count=0,
+            tasks=[],
+        )
+        await self.goal_manager.set_goal(
+            summary=text,
+            constraints={"category": "sports_fixtures"},
+            raw_input=text,
+        )
+        await self.context_manager.update_goal(text, {})
+
+        if self.plan_version != current_version:
+            return {"status": "interrupted", "goal": text}
+
+        await self.set_state(AgentState.THINKING, reason="fetching_sports_fixtures")
+        params = dict(sports_params or {})
+        if not params.get("date_from"):
+            from backend.tools.date_parser import parse_date_intent
+            d_from, d_to = parse_date_intent(text, self.context_manager.get_current_runtime_date())
+            if d_from:
+                params["date_from"] = d_from
+            if d_to:
+                params["date_to"] = d_to
+        fixture_data = await SportsTool.fetch_fixtures(params, user_timezone="Asia/Kolkata")
+        matches = fixture_data.get("matches", [])
+        concise_summary = fixture_data.get("summary", "")
+
+
+        # Emit dedicated structured sports fixtures event
+        await self.event_bus.emit(
+            EventType.SPORTS_FIXTURES,
+            session_id=self.session_id,
+            query=fixture_data.get("query", {}),
+            matches=matches,
+            summary=concise_summary,
+            generated_at=fixture_data.get("generated_at"),
+            timezone=fixture_data.get("timezone"),
+        )
+
+        if self.plan_version != current_version:
+            return {"status": "interrupted", "goal": text}
+
+        await self.set_state(AgentState.SPEAKING, reason="sports_response")
+
+        lines = [concise_summary, ""]
+        if matches:
+            lines.append("| Status | Match | Kickoff / Score | Venue |")
+            lines.append("| :--- | :--- | :--- | :--- |")
+            for m in matches:
+                h_name = m["home_team"]["name"]
+                a_name = m["away_team"]["name"]
+                status = m["status"]
+                score_str = f"{m.get('home_score', '-')} - {m.get('away_score', '-')}" if m.get("home_score") is not None else "vs"
+                time_str = f"{m['local_date']} {m['local_start_time']}"
+                venue = m.get("venue") or "-"
+                lines.append(f"| **{status}** | {h_name} {score_str} {a_name} | {time_str} | {venue} |")
+
+        full_response_text = "\n".join(lines).strip()
+
+        await self.event_bus.emit(
+            EventType.RESPONSE_COMPLETED,
+            session_id=self.session_id,
+            text=full_response_text,
+            spoken_summary=concise_summary,
+        )
+        await self.context_manager.add_conversation_turn("assistant", full_response_text)
+        await self.set_state(AgentState.IDLE, reason="response_finished")
+
+        return {
+            "status": "completed",
+            "goal": text,
+            "response": full_response_text,
+            "spoken_summary": concise_summary,
+            "matches": matches,
+            "tasks": [],
+        }
+
 
     # -- Execution Monitoring ----------------------------------------------
 
@@ -435,6 +680,28 @@ class Orchestrator:
 
                 if self.plan_version != start_version:
                     return
+
+                # Determine completion status (COMPLETE, PARTIAL, FAILED)
+                has_empty_hotel_results = False
+                for t in completed_tasks:
+                    out = t.get("output", {})
+                    if isinstance(out, dict):
+                        if t.get("tool") == "hotel_search":
+                            if out.get("status") == "SUCCESS_WITH_NO_RESULTS" or out.get("count", 0) == 0:
+                                has_empty_hotel_results = True
+
+                failed_tasks = self.task_graph.get_tasks_by_status(TaskStatus.FAILED)
+                cancelled_tasks = self.task_graph.get_tasks_by_status(TaskStatus.CANCELLED)
+
+                if failed_tasks and not completed_tasks:
+                    plan_status = "FAILED"
+                elif has_empty_hotel_results or failed_tasks or cancelled_tasks:
+                    plan_status = "PARTIAL"
+                else:
+                    plan_status = "COMPLETE"
+
+                if self.goal_manager.current_goal:
+                    self.goal_manager.current_goal.status = plan_status
 
                 # Generate speech / text response
                 summary = await self.response_manager.generate_task_response(
@@ -564,6 +831,7 @@ class Orchestrator:
             "state": self.state.value,
             "previous_state": self.previous_state.value,
             "plan_version": self.plan_version,
+            "plan_status": self.goal_manager.current_goal.status if self.goal_manager.current_goal else "IDLE",
             "goal": self.goal_manager.to_dict(),
             "context": self.context_manager.to_dict(),
             "task_graph": self.task_graph.to_dict(),

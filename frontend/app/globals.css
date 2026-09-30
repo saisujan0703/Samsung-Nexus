@@ -1,81 +1,173 @@
 @import "tailwindcss";
 
 :root {
-  --background: #090d16;
-  --foreground: #f1f5f9;
+  --background: #060907;
+  --foreground: #eef5ef;
 }
 
 body {
-  background-color: #090d16;
-  color: #f1f5f9;
+  background-color: #060907;
+  color: #eef5ef;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   overflow-x: hidden;
 }
 
-/* Custom Scrollbars */
+/* Atmospheric Aurora Background (Realistic Multi-Layered Celestial Aurora) */
+.aurora-backdrop {
+  background-color: #050806;
+  position: relative;
+  background-image: 
+    /* Primary upper-left aurora radiance */
+    radial-gradient(ellipse 70% 60% at 10% 25%, rgba(46, 130, 70, 0.34) 0%, rgba(26, 80, 44, 0.16) 45%, transparent 75%),
+    /* Counterpart upper-right soft jade aurora */
+    radial-gradient(ellipse 65% 55% at 92% 22%, rgba(24, 125, 85, 0.24) 0%, rgba(15, 75, 52, 0.10) 45%, transparent 72%),
+    /* Mid-right gentle teal glow */
+    radial-gradient(ellipse 55% 45% at 95% 65%, rgba(35, 125, 80, 0.22) 0%, transparent 65%),
+    /* Center-top luminous arch */
+    radial-gradient(ellipse 80% 40% at 50% 6%, rgba(55, 145, 90, 0.20) 0%, transparent 60%),
+    /* Lower-left deep forest grounding */
+    radial-gradient(ellipse 50% 40% at 20% 85%, rgba(22, 70, 40, 0.22) 0%, transparent 60%),
+    /* Subtle vertical atmospheric column banding */
+    repeating-linear-gradient(
+      90deg,
+      rgba(10, 20, 14, 0.25) 0px,
+      rgba(10, 20, 14, 0.25) 48px,
+      rgba(18, 38, 24, 0.18) 48px,
+      rgba(18, 38, 24, 0.18) 96px
+    );
+}
+
+/* Floating animated aurora light layers */
+@keyframes aurora-sway-1 {
+  0%, 100% {
+    transform: translate(0px, 0px) scale(1);
+    opacity: 0.85;
+  }
+  50% {
+    transform: translate(25px, 15px) scale(1.06);
+    opacity: 1;
+  }
+}
+
+@keyframes aurora-sway-2 {
+  0%, 100% {
+    transform: translate(0px, 0px) scale(1);
+    opacity: 0.75;
+  }
+  50% {
+    transform: translate(-20px, -12px) scale(1.05);
+    opacity: 0.95;
+  }
+}
+
+@keyframes aurora-sway-3 {
+  0%, 100% {
+    transform: translate(0px, 0px) scale(1);
+    opacity: 0.65;
+  }
+  50% {
+    transform: translate(15px, -15px) scale(1.08);
+    opacity: 0.85;
+  }
+}
+
+.aurora-layer-1 {
+  animation: aurora-sway-1 22s ease-in-out infinite alternate;
+}
+
+.aurora-layer-2 {
+  animation: aurora-sway-2 26s ease-in-out infinite alternate;
+}
+
+.aurora-layer-3 {
+  animation: aurora-sway-3 20s ease-in-out infinite alternate;
+}
+
+/* Main Chat Aurora Fog with balanced dual-side illumination */
+.chat-aurora-fog {
+  position: relative;
+}
+.chat-aurora-fog::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 580px;
+  height: 100%;
+  pointer-events: none;
+  background: radial-gradient(ellipse at 0% 32%, rgba(72, 160, 92, 0.26) 0%, rgba(38, 98, 55, 0.12) 48%, transparent 80%);
+  z-index: 0;
+}
+.chat-aurora-fog::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 480px;
+  height: 100%;
+  pointer-events: none;
+  background: radial-gradient(ellipse at 100% 45%, rgba(32, 120, 80, 0.16) 0%, rgba(20, 75, 50, 0.07) 50%, transparent 80%);
+  z-index: 0;
+}
+
+/* User Message Bubble Gradient (Exact from image: olive-forest green gradient) */
+.user-bubble-gradient {
+  background: linear-gradient(135deg, rgba(68, 110, 75, 0.92) 0%, rgba(42, 75, 48, 0.96) 55%, rgba(32, 60, 38, 0.98) 100%);
+  border: 1px solid rgba(115, 190, 125, 0.28);
+  box-shadow: 0 4px 20px 0 rgba(8, 22, 13, 0.50);
+  color: #f2faf3;
+}
+
+/* Assistant Message Bubble (Deep dark charcoal/forest shade) */
+.assistant-bubble-dark {
+  background: linear-gradient(180deg, rgba(20, 28, 23, 0.95) 0%, rgba(13, 19, 16, 0.98) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  box-shadow: 0 4px 18px 0 rgba(0, 0, 0, 0.40);
+  color: #dbe5dc;
+}
+
+/* Panels with Aurora glass styling */
+.aurora-panel {
+  background: rgba(10, 15, 12, 0.88);
+  backdrop-filter: blur(24px);
+  border: 1px solid rgba(80, 140, 90, 0.16);
+  box-shadow: 
+    0 12px 40px 0 rgba(0, 0, 0, 0.60),
+    inset 0 1px 0 0 rgba(110, 231, 183, 0.08),
+    inset 0 0 24px 0 rgba(16, 185, 129, 0.03);
+}
+
+.aurora-card {
+  background: rgba(18, 26, 21, 0.65);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(70, 125, 80, 0.16);
+}
+
+/* Custom Scrollbars in dark aurora green */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
 }
 ::-webkit-scrollbar-track {
-  background: rgba(15, 23, 42, 0.6);
+  background: rgba(8, 14, 10, 0.6);
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(51, 65, 85, 0.8);
+  background: rgba(45, 75, 52, 0.65);
   border-radius: 4px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(100, 116, 139, 1);
+  background: rgba(65, 110, 75, 0.9);
 }
 
-/* Glowing Animations */
-@keyframes orb-pulse {
+/* Glowing concentric orb animation for SURU assistant */
+@keyframes aurora-glow {
   0%, 100% {
-    transform: scale(1);
-    opacity: 0.85;
+    filter: drop-shadow(0 0 10px rgba(52, 211, 153, 0.5));
   }
   50% {
-    transform: scale(1.08);
-    opacity: 1;
-    filter: drop-shadow(0 0 25px currentColor);
+    filter: drop-shadow(0 0 20px rgba(52, 211, 153, 0.8));
   }
 }
-
-@keyframes spin-slow {
-  from {
-    transform: rotate(0deg);
-  }
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-@keyframes radar-sweep {
-  0% {
-    transform: rotate(0deg);
-  }
-  100% {
-    transform: rotate(360deg);
-  }
-}
-
-.animate-orb-pulse {
-  animation: orb-pulse 2.8s ease-in-out infinite;
-}
-
-.animate-spin-slow {
-  animation: spin-slow 14s linear infinite;
-}
-
-.glass-panel {
-  background: rgba(15, 23, 42, 0.7);
-  backdrop-filter: blur(12px);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
-}
-
-.glass-card {
-  background: rgba(30, 41, 59, 0.5);
-  backdrop-filter: blur(8px);
-  border: 1px solid rgba(255, 255, 255, 0.05);
+.animate-aurora-glow {
+  animation: aurora-glow 3s ease-in-out infinite;
 }

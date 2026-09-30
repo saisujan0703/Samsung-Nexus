@@ -8,6 +8,7 @@ import {
   SessionSnapshot,
   Task,
   TranscriptMessage,
+  SportsFixturesPayload,
 } from "../lib/types";
 import { useSpeechSynthesis } from "./useSpeechSynthesis";
 
@@ -29,9 +30,11 @@ export function useNexusWebSocket() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [goalSummary, setGoalSummary] = useState<string>("");
   const [constraints, setConstraints] = useState<Record<string, any>>({});
+  const [planStatus, setPlanStatus] = useState<string>("IN_PROGRESS");
   const [planDiff, setPlanDiff] = useState<PlanDiff | null>(null);
   const [messages, setMessages] = useState<TranscriptMessage[]>([]);
   const [events, setEvents] = useState<NexusEvent[]>([]);
+  const [sportsFixtures, setSportsFixtures] = useState<SportsFixturesPayload | null>(null);
   const [activeInterruption, setActiveInterruption] = useState<{
     type: string;
     confidence: number;
@@ -43,6 +46,7 @@ export function useNexusWebSocket() {
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const activeResponseIdRef = useRef<number>(0);
   const sessionIdRef = useRef<string>("");
+  const pendingSportsFixturesRef = useRef<SportsFixturesPayload | null>(null);
 
   // Send fast-path speech_started notification on speech onset
   const sendSpeechStarted = useCallback(() => {
@@ -134,7 +138,8 @@ export function useNexusWebSocket() {
 
   // Handler for typed events
   const handleWebSocketMessage = (msg: any) => {
-    const msgType = msg.type || msg.event_type;
+    const rawType = msg.type || msg.event_type || "";
+    const msgType = String(rawType).toLowerCase();
 
     // Initial snapshot on connection
     if (msgType === "initial_state" && msg.payload) {
@@ -143,6 +148,8 @@ export function useNexusWebSocket() {
       if (p.task_graph?.tasks) setTasks(p.task_graph.tasks);
       if (p.goal?.current_goal?.summary) setGoalSummary(p.goal.current_goal.summary);
       if (p.goal?.current_goal?.constraints) setConstraints(p.goal.current_goal.constraints);
+      if (p.plan_status) setPlanStatus(p.plan_status);
+      if (p.goal?.current_goal?.status) setPlanStatus(p.goal.current_goal.status);
       return;
     }
 
@@ -219,6 +226,7 @@ export function useNexusWebSocket() {
         if (msg.data?.goal) {
           setGoalSummary(msg.data.goal);
         }
+        setPlanStatus("IN_PROGRESS");
         break;
 
       case "plan_diff_computed":
@@ -298,8 +306,9 @@ export function useNexusWebSocket() {
         }
         break;
 
-      case "response_started":
+      case "response_started": {
         activeResponseIdRef.current += 1;
+        const pendingFixtures = pendingSportsFixturesRef.current;
         setMessages((prev) => [
           ...prev,
           {
@@ -307,9 +316,11 @@ export function useNexusWebSocket() {
             role: "assistant",
             content: "",
             timestamp: msg.timestamp || new Date().toISOString(),
+            sportsFixtures: pendingFixtures || undefined,
           },
         ]);
         break;
+      }
 
       case "response_chunk":
         setMessages((prev) => {
@@ -318,27 +329,91 @@ export function useNexusWebSocket() {
           const last = updated[updated.length - 1];
           if (last.role === "assistant") {
             last.content = msg.data?.text || last.content + (msg.data?.chunk || "");
+            if (!last.sportsFixtures && pendingSportsFixturesRef.current) {
+              last.sportsFixtures = pendingSportsFixturesRef.current;
+            }
           }
           return updated;
         });
         break;
+
+      case "sports_fixtures": {
+        const payloadData = msg.data || msg.payload || msg;
+        const matchesList = payloadData.matches || [];
+        console.log(`[SPORTS UI] Received SPORTS_FIXTURES with ${matchesList.length} matches:`, payloadData);
+        const fixturesPayload: SportsFixturesPayload = {
+          query: payloadData.query || {},
+          matches: matchesList,
+          summary: payloadData.summary,
+          generated_at: payloadData.generated_at,
+          timezone: payloadData.timezone,
+        };
+        setSportsFixtures(fixturesPayload);
+        pendingSportsFixturesRef.current = fixturesPayload;
+
+        // Directly attach to the latest assistant message if one is present in transcript
+        setMessages((prev) => {
+          if (!prev.length) return prev;
+          const updated = [...prev];
+          for (let i = updated.length - 1; i >= 0; i--) {
+            if (updated[i].role === "assistant") {
+              updated[i] = {
+                ...updated[i],
+                sportsFixtures: fixturesPayload,
+              };
+              return updated;
+            }
+          }
+          return prev;
+        });
+        break;
+      }
+
 
       case "response_completed":
         if (msg.data?.text) {
           const finalResponseText = msg.data.text;
           const currentResponseId = activeResponseIdRef.current;
           setMessages((prev) => {
-            if (!prev.length) return prev;
+            if (!prev.length) {
+              return [
+                {
+                  id: Math.random().toString(),
+                  role: "assistant",
+                  content: finalResponseText,
+                  timestamp: msg.timestamp || new Date().toISOString(),
+                  sportsFixtures: pendingSportsFixturesRef.current || undefined,
+                },
+              ];
+            }
             const updated = [...prev];
             const last = updated[updated.length - 1];
             if (last.role === "assistant") {
               last.content = finalResponseText;
+              // If sportsFixtures wasn't attached yet, attach pending sports fixtures
+              if (!last.sportsFixtures && pendingSportsFixturesRef.current) {
+                last.sportsFixtures = pendingSportsFixturesRef.current;
+              }
+            } else {
+              updated.push({
+                id: Math.random().toString(),
+                role: "assistant",
+                content: finalResponseText,
+                timestamp: msg.timestamp || new Date().toISOString(),
+                sportsFixtures: pendingSportsFixturesRef.current || undefined,
+              });
             }
             return updated;
           });
-          // Speak ONLY if response was not superseded by a new user interruption
+          if (finalResponseText.includes("partially completed") || finalResponseText.includes("No hotels were found")) {
+            setPlanStatus("PARTIAL");
+          } else {
+            setPlanStatus("COMPLETE");
+          }
+          // Speak concise summary if provided (e.g. for sports fixtures) or final text
           if (currentResponseId === activeResponseIdRef.current) {
-            speak(finalResponseText);
+            const textToSpeak = msg.data?.spoken_summary || finalResponseText;
+            speak(textToSpeak);
           } else {
             console.log("[TTS] Discarded stale response superseded by interruption");
           }
@@ -347,6 +422,7 @@ export function useNexusWebSocket() {
     }
   };
 
+
   // Send text to backend
   const sendUserInput = useCallback(
     (text: string) => {
@@ -354,6 +430,8 @@ export function useNexusWebSocket() {
       // Immediately silence any active TTS speech and increment response guard ID
       cancelSpeech();
       activeResponseIdRef.current += 1;
+      pendingSportsFixturesRef.current = null;
+      setSportsFixtures(null);
 
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
         wsRef.current.send(JSON.stringify({ type: "user_input", text }));
@@ -375,6 +453,9 @@ export function useNexusWebSocket() {
       if (!imageData) return;
       cancelSpeech();
       activeResponseIdRef.current += 1;
+      pendingSportsFixturesRef.current = null;
+      setSportsFixtures(null);
+
 
       // Add user turn locally right away
       setMessages((prev) => [
@@ -412,18 +493,66 @@ export function useNexusWebSocket() {
     [cancelSpeech, sessionId]
   );
 
-  // Restart session
-  const resetSession = useCallback(async () => {
+  // Switch session to an existing or custom ID with restored state
+  const switchSession = useCallback(
+    (
+      newSessionId: string,
+      restoredMessages: TranscriptMessage[] = [],
+      restoredSportsFixtures: SportsFixturesPayload | null = null,
+      restoredGoal: string = "",
+      restoredTasks: Task[] = []
+    ) => {
+      cancelSpeech();
+      activeResponseIdRef.current += 1;
+      pendingSportsFixturesRef.current = restoredSportsFixtures;
+      setMessages(restoredMessages);
+      setSportsFixtures(restoredSportsFixtures);
+      setGoalSummary(restoredGoal);
+      setTasks(restoredTasks);
+      setPlanDiff(null);
+      setEvents([]);
+      setActiveInterruption(null);
+      setPlanStatus("IN_PROGRESS");
+      setAgentState("IDLE");
+
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
+      }
+      sessionIdRef.current = newSessionId;
+      setSessionId(newSessionId);
+    },
+    [cancelSpeech]
+  );
+
+  // Restart session / create new
+  const resetSession = useCallback(async (customNewId?: string) => {
     cancelSpeech();
     activeResponseIdRef.current += 1;
+    pendingSportsFixturesRef.current = null;
     setMessages([]);
     setTasks([]);
     setPlanDiff(null);
     setEvents([]);
     setActiveInterruption(null);
+    setSportsFixtures(null);
     setGoalSummary("");
     setConstraints({});
-    await initSession(true);
+    setPlanStatus("IN_PROGRESS");
+    setAgentState("IDLE");
+
+    if (wsRef.current) {
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+
+    if (customNewId) {
+      sessionIdRef.current = customNewId;
+      setSessionId(customNewId);
+      return customNewId;
+    } else {
+      return await initSession(true);
+    }
   }, [cancelSpeech, initSession]);
 
   return {
@@ -433,14 +562,22 @@ export function useNexusWebSocket() {
     tasks,
     goalSummary,
     constraints,
+    planStatus,
     planDiff,
     messages,
     events,
     activeInterruption,
+    sportsFixtures,
+    clearSportsFixtures: () => {
+      setSportsFixtures(null);
+      pendingSportsFixturesRef.current = null;
+    },
+
     sendUserInput,
     uploadImage,
     sendSpeechStarted,
     resetSession,
+    switchSession,
     // TTS Voice Output properties
     isSpeaking,
     isMuted,

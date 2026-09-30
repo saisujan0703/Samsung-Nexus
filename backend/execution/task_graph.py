@@ -166,6 +166,21 @@ class TaskGraph:
         task.output = output
         return task
 
+    def reset_task(self, task_id: str, new_input: dict[str, Any] | None = None) -> Task:
+        """Reset a task back to PENDING with optional updated input (used during replanning)."""
+        task = self.get_task(task_id)
+        if task is None:
+            raise KeyError(f"Task '{task_id}' not found")
+        task.status = TaskStatus.PENDING
+        task.started_at = None
+        task.completed_at = None
+        task.output = None
+        task.cancellation_reason = None
+        if new_input is not None:
+            task.input = new_input
+        self._version += 1
+        return task
+
     # -- Queries -----------------------------------------------------------
 
     def get_task(self, task_id: str) -> Task | None:

@@ -28,6 +28,7 @@ class Planner:
         self.llm = llm_provider
         self.event_bus = event_bus
         self.session_id = session_id
+        self.last_plan_spec: PlanSpec | None = None
 
     async def create_plan(
         self,
@@ -43,6 +44,7 @@ class Planner:
         """
         # Generate plan via LLM
         plan_spec = await self.llm.create_plan(goal, constraints, context)
+        self.last_plan_spec = plan_spec
 
         # Clear existing graph
         task_graph.clear()

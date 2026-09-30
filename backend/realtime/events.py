@@ -69,6 +69,9 @@ class EventType(str, Enum):
     CONTEXT_UPDATED = "CONTEXT_UPDATED"
     CONTEXT_PRESERVED = "CONTEXT_PRESERVED"
 
+    # Sports Fixtures
+    SPORTS_FIXTURES = "SPORTS_FIXTURES"
+
     # Errors
     ERROR = "ERROR"
 

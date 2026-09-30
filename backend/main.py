@@ -7,7 +7,7 @@ Connects client applications to the real-time interruptible agent orchestrator.
 from __future__ import annotations
 
 import uuid
-from typing import Any
+from typing import Any, Optional
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 from backend.config import settings
 from backend.memory.session_memory import session_memory
 from backend.realtime.session import realtime_manager
+import backend.db as db
 
 
 app = FastAPI(
@@ -37,9 +38,34 @@ app.add_middleware(
 # Request / Response Schemas
 # ---------------------------------------------------------------------------
 
+class RegisterRequest(BaseModel):
+    email: str = Field(..., min_length=3)
+    password: str = Field(..., min_length=1)
+    display_name: str = Field(default="")
+
+
+class LoginRequest(BaseModel):
+    email: str = Field(..., min_length=3)
+    password: str = Field(..., min_length=1)
+
+
+class SaveChatRequest(BaseModel):
+    session_id: str
+    title: str = "New Conversation"
+    messages: list[dict[str, Any]] = Field(default_factory=list)
+    sports_fixtures: Optional[dict[str, Any]] = None
+    goal_summary: Optional[str] = ""
+
+
+RegisterRequest.model_rebuild()
+LoginRequest.model_rebuild()
+SaveChatRequest.model_rebuild()
+
+
 class CreateSessionResponse(BaseModel):
     session_id: str
     message: str
+
 
 
 class UserInputRequest(BaseModel):
@@ -59,6 +85,55 @@ class ImageUploadRequest(BaseModel):
 async def health_check() -> dict[str, str]:
     """Health check endpoint."""
     return {"status": "ok", "service": "nexus-backend", "version": "1.0.0"}
+
+
+@app.post("/api/auth/register")
+async def register_user(req: RegisterRequest) -> dict[str, Any]:
+    """Register a new user account."""
+    try:
+        user = db.create_user(req.email, req.password, req.display_name)
+        return {"status": "ok", "user": user}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Failed to register user")
+
+
+@app.post("/api/auth/login")
+async def login_user(req: LoginRequest) -> dict[str, Any]:
+    """Authenticate and log in an existing user."""
+    user = db.authenticate_user(req.email, req.password)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid email or password.")
+    return {"status": "ok", "user": user}
+
+
+@app.get("/api/user/{user_id}/chats")
+async def list_user_chats(user_id: int) -> dict[str, Any]:
+    """Get all saved chat sessions for the user from persistent database."""
+    chats = db.get_user_chats(user_id)
+    return {"status": "ok", "chats": chats}
+
+
+@app.post("/api/user/{user_id}/chats")
+async def save_user_chat_endpoint(user_id: int, req: SaveChatRequest) -> dict[str, Any]:
+    """Persist or update chat session for user."""
+    saved = db.save_user_chat(
+        user_id=user_id,
+        session_id=req.session_id,
+        title=req.title,
+        messages=req.messages,
+        sports_fixtures=req.sports_fixtures,
+        goal_summary=req.goal_summary or "",
+    )
+    return {"status": "ok", "chat": saved}
+
+
+@app.delete("/api/user/{user_id}/chats/{session_id}")
+async def delete_user_chat_endpoint(user_id: int, session_id: str) -> dict[str, Any]:
+    """Delete a saved chat session for user."""
+    deleted = db.delete_user_chat(user_id, session_id)
+    return {"status": "ok", "deleted": deleted}
 
 
 @app.post("/api/session", response_model=CreateSessionResponse)

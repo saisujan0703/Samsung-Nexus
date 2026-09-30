@@ -80,18 +80,25 @@ def test_websocket_and_live_events():
 
 
 @pytest.mark.asyncio
-async def test_end_to_end_interruptible_flow():
+async def test_end_to_end_interruptible_flow(monkeypatch):
     """
     Test the exact defining NEXUS scenario:
     Initial Goal -> Execution -> Interruption (Parents + Walking) ->
     Constraint Change -> Plan Diff -> Selective Cancellation ->
     Budget Update -> New Goal Pivot.
     """
+    monkeypatch.setenv("LLM_PROVIDER", "mock")
+    from backend.config import Settings, settings
+    monkeypatch.setattr(Settings, "LLM_PROVIDER", "mock")
+    monkeypatch.setattr(settings, "LLM_PROVIDER", "mock")
     from backend.memory.session_memory import session_memory
     from backend.realtime.events import EventType
 
+    from backend.providers.base import MockProvider
     session_id = "test_scenario_1"
+    await session_memory.delete(session_id)
     orchestrator, event_bus, _ = await session_memory.get_or_create(session_id)
+    orchestrator.provider = MockProvider()
 
     events_received = []
 
@@ -203,13 +210,19 @@ async def test_session_memory_get():
 
 
 @pytest.mark.asyncio
-async def test_speech_started_voice_interruption():
+async def test_speech_started_voice_interruption(monkeypatch):
     """Verify handle_speech_started() and speech-start voice interruption flow."""
+    from backend.config import Settings, settings
+    monkeypatch.setattr(Settings, "LLM_PROVIDER", "mock")
+    monkeypatch.setattr(settings, "LLM_PROVIDER", "mock")
     from backend.memory.session_memory import session_memory
     from backend.agent.orchestrator import AgentState
 
+    from backend.providers.base import MockProvider
     session_id = "test_speech_int"
+    await session_memory.delete(session_id)
     orchestrator, event_bus, _ = await session_memory.get_or_create(session_id)
+    orchestrator.provider = MockProvider()
 
     # 1. Start initial goal
     await orchestrator.handle_user_input("Plan a 3-day Chennai trip for 15000 rupees.")

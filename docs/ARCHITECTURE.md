@@ -453,3 +453,45 @@ Evaluation endpoints:
 - `GET /api/session/{session_id}/snapshot`
 - `GET /api/session/{session_id}/events`
 - `POST /api/evaluate/{scenario_id}`
+
+## 15. General-Purpose Agent Architecture (Phase 8)
+
+In Phase 8, SURU AI evolved from a travel-demo system into a genuine general-purpose real-time interruptible agent.
+
+### Adaptive Query Flow
+
+```text
+User Input
+   │
+   ▼
+Orchestrator
+   │
+   ▼
+GeminiProvider / LLMProvider (Semantic Intent Reasoning)
+   ├────────────────────────────────────────┬────────────────────────────────────────┐
+   ▼                                        ▼                                        ▼
+Direct Knowledge / Coding / Math        Multi-Step Tasks (e.g. Travel)           Image Multimodal Query
+- Direct Gemini reasoning                - TaskGraph (DAG) generated             - Vision pipeline
+- Direct answer or CalculatorTool       - TaskExecutor concurrent run           - ContextManager grounding
+- No unnecessary DAG tasks               - Tools: DB, Search, Budget             - Visual response synthesis
+   │                                        │                                        │
+   └────────────────────────────────────────┴────────────────────────────────────────┘
+                                            │
+                                            ▼
+                               Gemini Synthesis / Final Answer
+                                            │
+                                            ▼
+                               RESPONSE_COMPLETED & EventBus
+                                            │
+                                            ▼
+                               Frontend Dashboard & TTS Audio
+```
+
+### Key Architectural Principles
+- **Domain Independence**: Travel planning is now one specialized capability among many; general questions (e.g. science, sports, coding, math) are fully supported without travel DAG contamination.
+- **Adaptive Task Graph Planning**: Direct queries execute immediately with zero superfluous DAG overhead, while complex multi-step workflows utilize the full power of concurrent `TaskGraph` execution.
+- **Provider Dual-Mode**:
+  - `GeminiProvider`: The live production reasoning brain, featuring semantic intent classification, Google Search grounding, transient retry handling (503/429), and rich synthesized responses without question-echoing.
+  - `MockProvider`: Preserved strictly for deterministic offline testing and the 13 automated evaluation scenarios.
+- **Domain-Agnostic Interruption Engine**: Fast-path voice detection (`USER_SPEECH_STARTED`), semantic interruption classification (`CONSTRAINT_CHANGE`, `NEW_GOAL`, `QUESTION`, `CANCEL_TASK`), and incremental `PlanDiff` (KEEP, CANCEL, MODIFY, ADD) apply uniformly across any subject or task domain.
+

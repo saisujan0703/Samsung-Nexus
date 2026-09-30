@@ -56,18 +56,43 @@ export interface TranscriptMessage {
   isInterruption?: boolean;
   category?: string;
   imageUrl?: string;
+  sportsFixtures?: SportsFixturesPayload;
 }
+
+export interface ChatSessionMeta {
+  id: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+  messageCount: number;
+  preview: string;
+}
+
+export interface StoredChatSession {
+  id: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+  messages: TranscriptMessage[];
+  sportsFixtures?: SportsFixturesPayload | null;
+  goalSummary?: string;
+  tasks?: Task[];
+}
+
 
 export interface SessionSnapshot {
   session_id: string;
   state: AgentState;
   previous_state: AgentState;
+  plan_version?: number;
+  plan_status?: string;
   goal: {
     current_goal: {
       id: string;
       summary: string;
       constraints: Record<string, any>;
       version: number;
+      status?: string;
     } | null;
     history_count: number;
   };
@@ -90,3 +115,62 @@ export interface SessionSnapshot {
   running_tasks: string[];
   interruption_count: number;
 }
+
+export type MatchStatus =
+  | "SCHEDULED"
+  | "LIVE"
+  | "HALFTIME"
+  | "FINISHED"
+  | "POSTPONED"
+  | "CANCELLED";
+
+export interface TeamInfo {
+  name: string;
+  short_name: string;
+  logo?: string | null;
+}
+
+export interface MatchItem {
+  id: string;
+  sport: string;
+  competition: string;
+  stage?: string | null;
+  group?: string | null;
+  start_time: string;
+  local_start_time: string;
+  local_date: string;
+  timezone: string;
+  status: MatchStatus;
+  status_detail?: string | null;
+  elapsed_time?: string | null;
+  home_team: TeamInfo;
+  away_team: TeamInfo;
+  home_score?: number | string | null;
+  away_score?: number | string | null;
+  venue?: string | null;
+  source: string;
+}
+
+export interface SportsFixturesPayload {
+  query: {
+    sport?: string | null;
+    competition?: string | null;
+    team?: string | null;
+    date_from?: string | null;
+    date_to?: string | null;
+    timezone?: string | null;
+    status?: string | null;
+  };
+  matches: MatchItem[];
+  summary?: string;
+  generated_at?: string;
+  timezone?: string;
+}
+
+export interface AuthUser {
+  id: number;
+  email: string;
+  display_name: string;
+  created_at?: number;
+}
+
