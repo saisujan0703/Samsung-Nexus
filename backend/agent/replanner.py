@@ -20,7 +20,9 @@ from backend.realtime.events import EventBus, EventType
 class PlanDiff:
     """Result of comparing an old plan to a new plan."""
 
-    def __init__(self) -> None:
+    def __init__(self, diff_id: str = "") -> None:
+        import uuid
+        self.diff_id: str = diff_id or uuid.uuid4().hex[:8]
         self.keep: list[str] = []       # task IDs to keep
         self.cancel: list[str] = []     # task IDs to cancel
         self.modify: list[dict] = []    # {task_id, changes}
@@ -28,6 +30,7 @@ class PlanDiff:
 
     def to_dict(self) -> dict:
         return {
+            "diff_id": self.diff_id,
             "keep": self.keep,
             "cancel": self.cancel,
             "modify": self.modify,
@@ -57,6 +60,7 @@ class Replanner:
         self.llm = llm_provider
         self.event_bus = event_bus
         self.session_id = session_id
+        self._applied_diff_ids: set[str] = set()
 
     async def compute_diff(
         self,
@@ -73,7 +77,8 @@ class Replanner:
         old_tasks = task_graph.get_all_tasks()
 
         # Generate new plan for comparison
-        goal = self._build_goal_string(new_constraints)
+        goal_summary = str(changed_fields.get("goal", ""))
+        goal = self._build_goal_string(new_constraints, goal_summary)
         new_plan = await self.llm.create_plan(goal, new_constraints)
 
         # Build lookup of new task names/tools
@@ -84,24 +89,20 @@ class Replanner:
         for old_task in old_tasks:
             name_lower = old_task.name.lower()
 
-            if old_task.status == TaskStatus.COMPLETED:
-                # Completed tasks are kept if still relevant
-                if self._is_task_affected(old_task, changed_fields):
-                    # Results may be partially invalid but we keep the task as completed
-                    diff.keep.append(old_task.id)
-                    old_task.diff_action = PlanDiffAction.KEEP
-                else:
-                    diff.keep.append(old_task.id)
-                    old_task.diff_action = PlanDiffAction.KEEP
-
-            elif old_task.status == TaskStatus.CANCELLED:
+            if old_task.status == TaskStatus.CANCELLED:
                 # Already cancelled, skip
                 continue
 
-            elif name_lower in new_task_map:
-                new_spec = new_task_map[name_lower]
-                if self._is_task_affected(old_task, changed_fields):
-                    # Task exists in new plan but parameters changed
+            is_affected = self._is_task_affected(old_task, changed_fields)
+
+            if not is_affected:
+                # Task not affected by constraint changes — KEEP whether completed or pending
+                diff.keep.append(old_task.id)
+                old_task.diff_action = PlanDiffAction.KEEP
+            else:
+                # Task IS affected by constraint changes!
+                if name_lower in new_task_map:
+                    new_spec = new_task_map[name_lower]
                     diff.modify.append({
                         "task_id": old_task.id,
                         "new_input": new_spec.get("input", {}),
@@ -109,12 +110,9 @@ class Replanner:
                     })
                     old_task.diff_action = PlanDiffAction.MODIFY
                 else:
-                    diff.keep.append(old_task.id)
-                    old_task.diff_action = PlanDiffAction.KEEP
-            else:
-                # Task doesn't exist in new plan — cancel it
-                diff.cancel.append(old_task.id)
-                old_task.diff_action = PlanDiffAction.CANCEL
+                    # Task doesn't exist in new plan — cancel it
+                    diff.cancel.append(old_task.id)
+                    old_task.diff_action = PlanDiffAction.CANCEL
 
         # Determine which new tasks to add
         for new_name, new_spec in new_task_map.items():
@@ -140,6 +138,16 @@ class Replanner:
 
         Returns a summary of what changed.
         """
+        if diff.diff_id in self._applied_diff_ids:
+            return {
+                "cancelled": [],
+                "modified": [],
+                "added": [],
+                "kept": diff.keep,
+                "idempotent_skip": True,
+            }
+        self._applied_diff_ids.add(diff.diff_id)
+
         cancelled_ids: list[str] = []
         modified_ids: list[str] = []
         added_ids: list[str] = []
@@ -190,6 +198,13 @@ class Replanner:
                 elif task.status == TaskStatus.PENDING:
                     # Just update the input
                     task.input = mod.get("new_input", task.input)
+                    task.affected_by = "replan"
+                    task.diff_action = PlanDiffAction.MODIFY
+                    modified_ids.append(task.id)
+
+                elif task.status == TaskStatus.COMPLETED:
+                    # Stale result: reset task to PENDING with updated parameters so it re-executes
+                    task_graph.reset_task(task_id, mod.get("new_input", task.input))
                     task.affected_by = "replan"
                     task.diff_action = PlanDiffAction.MODIFY
                     modified_ids.append(task.id)
@@ -248,23 +263,24 @@ class Replanner:
         """Determine if a task is affected by the changed constraints."""
         input_str = str(task.input).lower()
         name_lower = task.name.lower()
+        tool_lower = (task.tool or "").lower()
 
         for field, change in changed_fields.items():
             field_lower = field.lower()
 
-            # Budget changes affect price-related tasks
+            # Budget changes affect price/budget/cost related tasks
             if field_lower == "budget":
-                if any(w in name_lower or w in input_str for w in ["price", "budget", "cost", "hotel", "calculate"]):
+                if any(w in name_lower or w in input_str or w in tool_lower for w in ["price", "budget", "cost", "hotel", "activity", "itinerary", "calculate"]):
                     return True
 
             # People changes affect capacity/cost tasks
             if field_lower in ("num_people", "num_people_delta"):
-                if any(w in name_lower or w in input_str for w in ["people", "person", "room", "budget", "cost", "calculate"]):
+                if any(w in name_lower or w in input_str or w in tool_lower for w in ["people", "person", "room", "budget", "cost", "calculate", "hotel", "activity", "itinerary"]):
                     return True
 
             # Walking changes affect destination/activity selection
             if field_lower == "max_walking":
-                if any(w in name_lower or w in input_str for w in ["destination", "activity", "itinerary", "walking"]):
+                if any(w in name_lower or w in input_str or w in tool_lower for w in ["destination", "activity", "itinerary", "walking"]):
                     return True
 
             # City changes affect everything
@@ -273,19 +289,41 @@ class Replanner:
 
             # Duration changes
             if field_lower == "duration_days":
-                if any(w in name_lower or w in input_str for w in ["itinerary", "hotel", "night", "day", "calculate"]):
+                if any(w in name_lower or w in input_str or w in tool_lower for w in ["itinerary", "hotel", "night", "day", "calculate", "budget"]):
                     return True
 
         return False
 
-    def _build_goal_string(self, constraints: dict[str, Any]) -> str:
-        city = constraints.get("city", "").title()
-        days = constraints.get("duration_days", "?")
-        people = constraints.get("num_people", "?")
-        budget = constraints.get("budget", "?")
-        parts = [f"Plan a {days}-day {city} trip for {people} people"]
-        if isinstance(budget, int):
-            parts[0] += f" under ₹{budget:,}"
+    def _build_goal_string(self, constraints: dict[str, Any], goal_summary: str = "") -> str:
+        import re
+        city = constraints.get("city")
+        if not city and goal_summary:
+            m = re.search(r'\b(chennai|bangalore|delhi|mumbai|goa|jaipur|hyderabad|tokyo|paris)\b', goal_summary, re.IGNORECASE)
+            if m:
+                city = m.group(1)
+        city_title = (city or "Chennai").title() if (city or "trip" in goal_summary.lower()) else ""
+        if not city_title:
+            return goal_summary or "General task goal"
+
+        days = constraints.get("duration_days")
+        if not days or days == "?":
+            m_days = re.search(r'(\d+)\s*[- ]?day', goal_summary)
+            days = int(m_days.group(1)) if m_days else 3
+
+        people = constraints.get("num_people")
+        if not people or people == "?":
+            m_ppl = re.search(r'(\d+)\s*(?:people|person|pax)', goal_summary)
+            people = int(m_ppl.group(1)) if m_ppl else 1
+
+        budget = constraints.get("budget")
+        if not budget or budget == "?":
+            m_bgt = re.search(r'[₹$€£]\s*([\d,]+)', goal_summary)
+            budget = int(m_bgt.group(1).replace(",", "")) if m_bgt else 15000
+
+        people_str = "1 person" if people == 1 else f"{people} people"
+        parts = [f"Plan a {days}-day {city_title} trip for {people_str}"]
+        if isinstance(budget, (int, float)):
+            parts[0] += f" under ₹{int(budget):,}"
         if constraints.get("max_walking"):
             parts.append(f"with max walking level: {constraints['max_walking']}")
         return " ".join(parts)

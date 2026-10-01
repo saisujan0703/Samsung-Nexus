@@ -53,6 +53,7 @@ class Orchestrator:
 
         self.state: AgentState = AgentState.IDLE
         self.previous_state: AgentState = AgentState.IDLE
+        self.plan_version: int = 1
 
         # Subsystems
         self.task_graph = TaskGraph()
@@ -67,6 +68,16 @@ class Orchestrator:
         # Wire task completion to findings
         self._execution_monitor_task: asyncio.Task | None = None
         self._lock = asyncio.Lock()
+
+        # Evaluation & Latency Metrics
+        self.metrics: dict[str, Any] = {
+            "input_count": 0,
+            "interruption_count": 0,
+            "last_input_ts": None,
+            "last_interruption_ts": None,
+            "last_planning_duration_ms": 0.0,
+            "last_response_generation_ms": 0.0,
+        }
 
     # -- State Management --------------------------------------------------
 
@@ -108,12 +119,30 @@ class Orchestrator:
                 AgentState.SPEAKING,
                 AgentState.THINKING,
                 AgentState.REPLANNING,
+                AgentState.INTERRUPTED,
             )
 
             if is_active:
                 return await self._handle_interruption(text)
             else:
                 return await self._handle_new_goal(text)
+
+    async def handle_speech_started(self) -> None:
+        """Process an immediate user speech onset signal from WebSocket."""
+        async with self._lock:
+            await self.event_bus.emit(
+                EventType.USER_SPEECH_STARTED,
+                session_id=self.session_id,
+            )
+            if self.state in (
+                AgentState.SPEAKING,
+                AgentState.EXECUTING,
+                AgentState.THINKING,
+                AgentState.REPLANNING,
+            ):
+                if self.state == AgentState.SPEAKING:
+                    self.response_manager.cancel_response()
+                await self.set_state(AgentState.INTERRUPTED, reason="user_speech_started")
 
     async def _handle_interruption(self, text: str) -> dict[str, Any]:
         """Process a live user interruption while agent is active."""
@@ -181,10 +210,15 @@ class Orchestrator:
         ack_speech: str = "",
     ) -> dict[str, Any]:
         """Apply constraint change via Replanner without full restart."""
+        self.plan_version += 1
+        self.executor.plan_version = self.plan_version
         await self.set_state(AgentState.REPLANNING, reason="constraint_change")
 
         # 1. Update Goal constraints
-        changes = interruption.details
+        changes = dict(interruption.details) if interruption.details else {}
+        if hasattr(self.llm, "_extract_constraint_changes"):
+            for k, v in self.llm._extract_constraint_changes(interruption.raw_text).items():
+                changes.setdefault(k, v)
         if not changes:
             # Fallback extraction
             changes = {"raw_constraint_update": interruption.raw_text}
@@ -210,6 +244,11 @@ class Orchestrator:
             executor_cancel_callback=self.executor.cancel_task,
         )
 
+        # Invalidate findings of modified/cancelled tasks in context manager
+        invalid_ids = [m["task_id"] for m in diff.modify] + diff.cancel
+        if invalid_ids:
+            await self.context_manager.invalidate_findings(task_ids=invalid_ids)
+
         # 5. Resume execution with updated graph
         await self.set_state(AgentState.EXECUTING, reason="replan_applied")
         self._ensure_execution_running()
@@ -227,6 +266,8 @@ class Orchestrator:
         ack_speech: str = "",
     ) -> dict[str, Any]:
         """Goal modified — replan affected elements."""
+        self.plan_version += 1
+        self.executor.plan_version = self.plan_version
         await self.set_state(AgentState.REPLANNING, reason="goal_change")
         new_summary = f"{self.goal_manager.get_goal_summary()} (Modified: {interruption.raw_text})"
         constraints = self.goal_manager.get_constraints()
@@ -260,23 +301,81 @@ class Orchestrator:
         ack_speech: str = "",
     ) -> dict[str, Any]:
         """Complete pivot to a brand new goal."""
+        self.plan_version += 1
+        self.executor.plan_version = self.plan_version
+        current_version = self.plan_version
         await self.executor.stop()
         await self.set_state(AgentState.THINKING, reason="new_goal_pivot")
 
-        # Plan from scratch for new goal
+        text = interruption.raw_text
+        current_date = self.context_manager.get_current_runtime_date()
+        intent_info = await self.llm.determine_intent(
+            text,
+            context=self.context_manager.get_context_summary(),
+            current_date=current_date,
+        )
+        category = intent_info.get("category", "DIRECT_KNOWLEDGE")
+        needs_dag = intent_info.get("needs_dag", False)
+
+        if category == "SPORTS_FIXTURE_QUERY":
+            return await self._handle_sports_fixtures(text, intent_info.get("sports_params"), current_version)
+
+        if not needs_dag:
+            self.task_graph.clear()
+            await self.event_bus.emit(
+                EventType.PLAN_CREATED,
+                session_id=self.session_id,
+                goal=text,
+                task_count=0,
+                tasks=[],
+            )
+            await self.goal_manager.set_goal(summary=text, constraints={}, raw_input=text)
+            await self.context_manager.update_goal(text, {})
+
+            if self.plan_version != current_version:
+                return {"status": "new_goal_started", "tasks_count": 0, "ack": ack_speech}
+
+            await self.set_state(AgentState.SPEAKING, reason="direct_response")
+            use_grounding = category == "CURRENT_INFORMATION" or bool(intent_info.get("needs_grounding", False))
+            await self.event_bus.emit(
+                EventType.RESPONSE_STARTED,
+                session_id=self.session_id,
+                goal=text,
+            )
+            response_text = await self.llm.generate_direct_response(
+                text,
+                context=self.context_manager.get_context_summary(),
+                use_grounding=use_grounding,
+                current_date=current_date,
+            )
+            if self.plan_version == current_version:
+                await self.event_bus.emit(
+                    EventType.RESPONSE_COMPLETED,
+                    session_id=self.session_id,
+                    text=response_text,
+                )
+                await self.context_manager.add_conversation_turn("assistant", response_text)
+                await self.set_state(AgentState.IDLE, reason="response_finished")
+
+            return {"status": "new_goal_started", "tasks_count": 0, "ack": ack_speech, "response": response_text}
+
+        # Multi-step DAG goal
         tasks = await self.planner.create_plan(
-            goal=interruption.raw_text,
+            goal=text,
             constraints={},
             task_graph=self.task_graph,
             context=self.context_manager.get_context_summary(),
         )
+        initial_constraints = {}
+        if hasattr(self.planner.llm, "_extract_constraint_changes"):
+            initial_constraints = self.planner.llm._extract_constraint_changes(text)
 
         await self.goal_manager.set_goal(
-            summary=interruption.raw_text,
-            constraints=self.planner.llm._extract_constraint_changes(interruption.raw_text) if hasattr(self.planner.llm, "_extract_constraint_changes") else {},
-            raw_input=interruption.raw_text,
+            summary=text,
+            constraints=initial_constraints,
+            raw_input=text,
         )
-
+        await self.context_manager.update_goal(text, initial_constraints)
         await self.set_state(AgentState.EXECUTING, reason="new_plan_starting")
         self._ensure_execution_running()
 
@@ -288,6 +387,8 @@ class Orchestrator:
         ack_speech: str = "",
     ) -> dict[str, Any]:
         """Cancel specific or active tasks."""
+        self.plan_version += 1
+        self.executor.plan_version = self.plan_version
         cancelled = await self.executor.cancel_tasks(
             self.executor.get_running_task_ids(),
             reason="user_requested_cancellation",
@@ -304,28 +405,125 @@ class Orchestrator:
         ack_speech: str = "",
     ) -> dict[str, Any]:
         """Answer a side question without halting background work."""
-        # Speak answer
-        ans = f"Regarding your question '{interruption.raw_text}': based on current findings, {self.context_manager.get_context_summary()[:150]}."
         await self.set_state(AgentState.SPEAKING, reason="answering_question")
+        text = interruption.raw_text
+        current_date = self.context_manager.get_current_runtime_date()
+        intent_info = await self.llm.determine_intent(
+            text,
+            context=self.context_manager.get_context_summary(),
+            current_date=current_date,
+        )
+        use_grounding = (
+            intent_info.get("category") == "CURRENT_INFORMATION"
+            or bool(intent_info.get("needs_grounding", False))
+        )
         
-        # Async task to speak and resume
-        async def speak_and_resume():
-            await self.response_manager.generate_task_response([], ans)
+        async def answer_and_resume():
+            try:
+                ans = await self.llm.generate_direct_response(
+                    text,
+                    context=self.context_manager.get_context_summary(),
+                    use_grounding=use_grounding,
+                    current_date=current_date,
+                )
+            except Exception as e:
+                ans = f"Regarding your question '{text}': {e}"
+
+            await self.response_manager.generate_task_response(
+                task_results=[{"name": "Question Answer", "status": "COMPLETED", "output": {"answer": ans}}],
+                goal=text,
+                context=self.context_manager.get_context_summary(),
+            )
+            await self.context_manager.add_conversation_turn("assistant", ans)
             if self.task_graph.has_active_tasks:
                 await self.set_state(AgentState.EXECUTING, reason="resume_after_question")
             else:
                 await self.set_state(AgentState.IDLE, reason="question_completed")
 
-        asyncio.create_task(speak_and_resume())
-        return {"status": "answering_question", "answer": ans, "ack": ack_speech}
+        asyncio.create_task(answer_and_resume())
+        return {
+            "status": "answering_question",
+            "answer": f"Regarding your question '{text}': checking findings...",
+            "ack": ack_speech,
+        }
 
     # -- New Goal Flow -----------------------------------------------------
 
     async def _handle_new_goal(self, text: str) -> dict[str, Any]:
-        """Initial goal creation and execution trigger."""
+        """Initial goal creation and execution trigger with adaptive routing."""
+        self.plan_version += 1
+        self.executor.plan_version = self.plan_version
+        current_version = self.plan_version
         await self.set_state(AgentState.THINKING, reason="initial_planning")
 
-        # 1. Initial Plan Creation
+        # 1. Semantic intent analysis: determine if DAG is required
+        current_date = self.context_manager.get_current_runtime_date()
+        intent_info = await self.llm.determine_intent(
+            text,
+            context=self.context_manager.get_context_summary(),
+            current_date=current_date,
+        )
+        category = intent_info.get("category", "DIRECT_KNOWLEDGE")
+        needs_dag = intent_info.get("needs_dag", False)
+
+        if category == "SPORTS_FIXTURE_QUERY":
+            return await self._handle_sports_fixtures(text, intent_info.get("sports_params"), current_version)
+
+        if not needs_dag:
+            # DIRECT QUERY PATH: no unnecessary DAG tasks or travel constraints
+            self.task_graph.clear()
+            await self.event_bus.emit(
+                EventType.PLAN_CREATED,
+                session_id=self.session_id,
+                goal=text,
+                task_count=0,
+                tasks=[],
+            )
+            await self.goal_manager.set_goal(
+                summary=text,
+                constraints={},
+                raw_input=text,
+            )
+            await self.context_manager.update_goal(text, {})
+
+            if self.plan_version != current_version:
+                return {"status": "interrupted", "goal": text}
+
+            await self.set_state(AgentState.SPEAKING, reason="direct_response")
+            use_grounding = category == "CURRENT_INFORMATION" or bool(intent_info.get("needs_grounding", False))
+
+            await self.event_bus.emit(
+                EventType.RESPONSE_STARTED,
+                session_id=self.session_id,
+                goal=text,
+            )
+
+            response_text = await self.llm.generate_direct_response(
+                text,
+                context=self.context_manager.get_context_summary(),
+                use_grounding=use_grounding,
+                current_date=current_date,
+            )
+
+            if self.plan_version != current_version:
+                return {"status": "interrupted", "goal": text}
+
+            await self.event_bus.emit(
+                EventType.RESPONSE_COMPLETED,
+                session_id=self.session_id,
+                text=response_text,
+            )
+            await self.context_manager.add_conversation_turn("assistant", response_text)
+            await self.set_state(AgentState.IDLE, reason="response_finished")
+
+            return {
+                "status": "completed",
+                "goal": text,
+                "response": response_text,
+                "tasks": [],
+            }
+
+        # 2. MULTI-STEP AGENT TASK: DAG planning and concurrent execution
         tasks = await self.planner.create_plan(
             goal=text,
             constraints={},
@@ -333,7 +531,6 @@ class Orchestrator:
             context=self.context_manager.get_context_summary(),
         )
 
-        # 2. Extract initial constraints for GoalManager
         initial_constraints = {}
         if hasattr(self.llm, "_extract_constraint_changes"):
             initial_constraints = self.llm._extract_constraint_changes(text)
@@ -355,22 +552,117 @@ class Orchestrator:
             "tasks": [t.to_dict() for t in tasks],
         }
 
+    async def _handle_sports_fixtures(
+        self,
+        text: str,
+        sports_params: Optional[dict[str, Any]],
+        current_version: int,
+    ) -> dict[str, Any]:
+        """Execute generic sports fixtures query and stream structured data + concise summary."""
+        from backend.tools.sports import SportsTool
+
+        self.task_graph.clear()
+        await self.event_bus.emit(
+            EventType.PLAN_CREATED,
+            session_id=self.session_id,
+            goal=text,
+            task_count=0,
+            tasks=[],
+        )
+        await self.goal_manager.set_goal(
+            summary=text,
+            constraints={"category": "sports_fixtures"},
+            raw_input=text,
+        )
+        await self.context_manager.update_goal(text, {})
+
+        if self.plan_version != current_version:
+            return {"status": "interrupted", "goal": text}
+
+        await self.set_state(AgentState.THINKING, reason="fetching_sports_fixtures")
+        params = dict(sports_params or {})
+        if not params.get("date_from"):
+            from backend.tools.date_parser import parse_date_intent
+            d_from, d_to = parse_date_intent(text, self.context_manager.get_current_runtime_date())
+            if d_from:
+                params["date_from"] = d_from
+            if d_to:
+                params["date_to"] = d_to
+        fixture_data = await SportsTool.fetch_fixtures(params, user_timezone="Asia/Kolkata")
+        matches = fixture_data.get("matches", [])
+        concise_summary = fixture_data.get("summary", "")
+
+
+        # Emit dedicated structured sports fixtures event
+        await self.event_bus.emit(
+            EventType.SPORTS_FIXTURES,
+            session_id=self.session_id,
+            query=fixture_data.get("query", {}),
+            matches=matches,
+            summary=concise_summary,
+            generated_at=fixture_data.get("generated_at"),
+            timezone=fixture_data.get("timezone"),
+        )
+
+        if self.plan_version != current_version:
+            return {"status": "interrupted", "goal": text}
+
+        await self.set_state(AgentState.SPEAKING, reason="sports_response")
+
+        lines = [concise_summary, ""]
+        if matches:
+            lines.append("| Status | Match | Kickoff / Score | Venue |")
+            lines.append("| :--- | :--- | :--- | :--- |")
+            for m in matches:
+                h_name = m["home_team"]["name"]
+                a_name = m["away_team"]["name"]
+                status = m["status"]
+                score_str = f"{m.get('home_score', '-')} - {m.get('away_score', '-')}" if m.get("home_score") is not None else "vs"
+                time_str = f"{m['local_date']} {m['local_start_time']}"
+                venue = m.get("venue") or "-"
+                lines.append(f"| **{status}** | {h_name} {score_str} {a_name} | {time_str} | {venue} |")
+
+        full_response_text = "\n".join(lines).strip()
+
+        await self.event_bus.emit(
+            EventType.RESPONSE_COMPLETED,
+            session_id=self.session_id,
+            text=full_response_text,
+            spoken_summary=concise_summary,
+        )
+        await self.context_manager.add_conversation_turn("assistant", full_response_text)
+        await self.set_state(AgentState.IDLE, reason="response_finished")
+
+        return {
+            "status": "completed",
+            "goal": text,
+            "response": full_response_text,
+            "spoken_summary": concise_summary,
+            "matches": matches,
+            "tasks": [],
+        }
+
+
     # -- Execution Monitoring ----------------------------------------------
 
     def _ensure_execution_running(self) -> None:
         """Start or restart the task executor loop and monitoring."""
         asyncio.create_task(self.executor.start())
-        if not self._execution_monitor_task or self._execution_monitor_task.done():
-            self._execution_monitor_task = asyncio.create_task(self._monitor_execution_loop())
+        if self._execution_monitor_task and not self._execution_monitor_task.done():
+            self._execution_monitor_task.cancel()
+        self._execution_monitor_task = asyncio.create_task(self._monitor_execution_loop())
 
     async def _monitor_execution_loop(self) -> None:
         """Monitors task execution progress and completes response when all tasks finish."""
+        start_version = self.plan_version
         try:
             while not self.task_graph.is_complete:
-                await asyncio.sleep(0.2)
+                await asyncio.sleep(0.1)
+                if self.plan_version != start_version:
+                    return
 
             # When complete and not interrupted:
-            if self.state == AgentState.EXECUTING:
+            if self.state == AgentState.EXECUTING and self.plan_version == start_version:
                 await self.set_state(AgentState.SPEAKING, reason="tasks_completed")
 
                 completed_tasks = [
@@ -386,40 +678,149 @@ class Orchestrator:
                             data=t["output"],
                         )
 
+                if self.plan_version != start_version:
+                    return
+
+                # Determine completion status (COMPLETE, PARTIAL, FAILED)
+                has_empty_hotel_results = False
+                for t in completed_tasks:
+                    out = t.get("output", {})
+                    if isinstance(out, dict):
+                        if t.get("tool") == "hotel_search":
+                            if out.get("status") == "SUCCESS_WITH_NO_RESULTS" or out.get("count", 0) == 0:
+                                has_empty_hotel_results = True
+
+                failed_tasks = self.task_graph.get_tasks_by_status(TaskStatus.FAILED)
+                cancelled_tasks = self.task_graph.get_tasks_by_status(TaskStatus.CANCELLED)
+
+                if failed_tasks and not completed_tasks:
+                    plan_status = "FAILED"
+                elif has_empty_hotel_results or failed_tasks or cancelled_tasks:
+                    plan_status = "PARTIAL"
+                else:
+                    plan_status = "COMPLETE"
+
+                if self.goal_manager.current_goal:
+                    self.goal_manager.current_goal.status = plan_status
+
                 # Generate speech / text response
                 summary = await self.response_manager.generate_task_response(
                     task_results=completed_tasks,
                     goal=self.goal_manager.get_goal_summary(),
                     context=self.context_manager.get_context_summary(),
                 )
-                await self.context_manager.add_conversation_turn("assistant", summary)
-                await self.set_state(AgentState.IDLE, reason="response_finished")
+                if self.plan_version == start_version and self.state == AgentState.SPEAKING:
+                    await self.context_manager.add_conversation_turn("assistant", summary)
+                    await self.set_state(AgentState.IDLE, reason="response_finished")
 
         except asyncio.CancelledError:
             pass
         except Exception as e:
             print(f"[Orchestrator] Execution monitor error: {e}")
-            await self.set_state(AgentState.IDLE, reason=f"error_{e}")
+            if self.plan_version == start_version:
+                await self.set_state(AgentState.IDLE, reason=f"error_{e}")
 
     # -- Image Handling ----------------------------------------------------
 
     async def handle_image_upload(self, image_data: str, prompt: str = "") -> dict[str, Any]:
         """Handle user multimodal image input."""
-        await self.event_bus.emit(
-            EventType.USER_IMAGE_UPLOAD,
-            session_id=self.session_id,
-            prompt=prompt,
-        )
-        # Analyze image
-        analysis = await self.llm.analyze_image(image_data, prompt)
+        async with self._lock:
+            # 1. Image payload validation
+            if not image_data or not isinstance(image_data, str):
+                await self.event_bus.emit(
+                    EventType.ERROR,
+                    session_id=self.session_id,
+                    error="Invalid image upload payload",
+                )
+                return {"status": "error", "error": "Invalid image payload"}
 
-        await self.context_manager.add_finding(
-            task_id="image_upload",
-            category="vision",
-            data={"analysis": analysis, "prompt": prompt},
-        )
+            # Max 10MB base64 payload size check (~14 million chars)
+            if len(image_data) > 14_000_000:
+                await self.event_bus.emit(
+                    EventType.ERROR,
+                    session_id=self.session_id,
+                    error="Image payload exceeds 10MB size limit",
+                )
+                return {"status": "error", "error": "Image payload exceeds 10MB size limit"}
 
-        return {"status": "image_analyzed", "analysis": analysis}
+            # Format check if data URI format
+            if "," in image_data:
+                header = image_data.split(",", 1)[0].lower()
+                if not any(fmt in header for fmt in ["png", "jpeg", "jpg", "webp", "gif"]):
+                    await self.event_bus.emit(
+                        EventType.ERROR,
+                        session_id=self.session_id,
+                        error="Unsupported image format",
+                    )
+                    return {"status": "error", "error": "Unsupported image format"}
+
+            start_version = self.plan_version
+
+            await self.event_bus.emit(
+                EventType.USER_IMAGE_UPLOAD,
+                session_id=self.session_id,
+                prompt=prompt,
+            )
+            await self.event_bus.emit(
+                EventType.IMAGE_RECEIVED,
+                session_id=self.session_id,
+                prompt=prompt,
+            )
+            await self.event_bus.emit(
+                EventType.IMAGE_PROCESSING,
+                session_id=self.session_id,
+                prompt=prompt,
+            )
+
+            try:
+                # 2. Analyze image using provider / tool
+                analysis = await self.llm.analyze_image(image_data, prompt)
+
+                # 3. Check for interruption / plan version change
+                if self.plan_version != start_version:
+                    return {"status": "stale_ignored", "reason": "plan_version_changed"}
+
+                # 4. Integrate into Session Context
+                await self.context_manager.add_finding(
+                    task_id="image_upload",
+                    category="vision",
+                    data={"analysis": analysis, "prompt": prompt or "Image uploaded"},
+                )
+                await self.context_manager.add_conversation_turn("user", f"[Uploaded Image] {prompt if prompt else 'Image attached'}")
+                await self.context_manager.add_conversation_turn("assistant", f"[Visual Analysis] {analysis}")
+
+                await self.event_bus.emit(
+                    EventType.IMAGE_CONTEXT_READY,
+                    session_id=self.session_id,
+                    analysis=analysis,
+                    prompt=prompt,
+                )
+
+                # 5. If prompt contains text or agent is active, trigger contextual replan
+                if prompt.strip() and self.state in (AgentState.EXECUTING, AgentState.SPEAKING, AgentState.THINKING):
+                    await self.set_state(AgentState.REPLANNING, reason="multimodal_replan")
+                    diff = await self.replanner.compute_diff(
+                        task_graph=self.task_graph,
+                        new_constraints=self.goal_manager.get_constraints(),
+                        changed_fields={"image_context": analysis, "prompt": prompt},
+                    )
+                    apply_summary = await self.replanner.apply_diff(
+                        task_graph=self.task_graph,
+                        diff=diff,
+                        executor_cancel_callback=self.executor.cancel_task,
+                    )
+                    await self.set_state(AgentState.EXECUTING, reason="multimodal_replan_applied")
+                    self._ensure_execution_running()
+
+                return {"status": "image_analyzed", "analysis": analysis}
+
+            except Exception as e:
+                await self.event_bus.emit(
+                    EventType.ERROR,
+                    session_id=self.session_id,
+                    error=f"Image processing failed: {e}",
+                )
+                return {"status": "error", "error": str(e)}
 
     # -- Snapshot & Status -------------------------------------------------
 
@@ -429,9 +830,14 @@ class Orchestrator:
             "session_id": self.session_id,
             "state": self.state.value,
             "previous_state": self.previous_state.value,
+            "plan_version": self.plan_version,
+            "plan_status": self.goal_manager.current_goal.status if self.goal_manager.current_goal else "IDLE",
             "goal": self.goal_manager.to_dict(),
             "context": self.context_manager.to_dict(),
             "task_graph": self.task_graph.to_dict(),
             "running_tasks": self.executor.get_running_task_ids(),
+            "completed_tasks": [t.id for t in self.task_graph.get_tasks_by_status(TaskStatus.COMPLETED)],
+            "cancelled_tasks": [t.id for t in self.task_graph.get_tasks_by_status(TaskStatus.CANCELLED)],
             "interruption_count": self.interruption_manager.get_interruption_count(),
+            "metrics": dict(self.metrics),
         }

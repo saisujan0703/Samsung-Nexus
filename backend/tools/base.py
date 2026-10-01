@@ -12,15 +12,24 @@ from __future__ import annotations
 
 import asyncio
 from abc import ABC, abstractmethod
+from enum import Enum
 from typing import Any
 
 from pydantic import BaseModel, Field
+
+
+class ToolResultStatus(str, Enum):
+    SUCCESS_WITH_RESULTS = "SUCCESS_WITH_RESULTS"
+    SUCCESS_WITH_NO_RESULTS = "SUCCESS_WITH_NO_RESULTS"
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
 
 
 class ToolResult(BaseModel):
     """Standardised output from a tool execution."""
 
     success: bool = True
+    status: str = ToolResultStatus.SUCCESS_WITH_RESULTS.value
     data: dict[str, Any] = Field(default_factory=dict)
     summary: str = ""
     error: str | None = None
@@ -84,7 +93,8 @@ class ToolRegistry:
 def create_default_registry() -> ToolRegistry:
     """Create a registry with all built-in tools."""
     from backend.tools.search import DestinationSearchTool, HotelSearchTool, ActivitySearchTool
-    from backend.tools.calculator import BudgetCalculatorTool
+    from backend.tools.web_search import WebSearchTool
+    from backend.tools.calculator import BudgetCalculatorTool, CalculatorTool
     from backend.tools.database import DatabaseQueryTool
     from backend.tools.vision import VisionAnalysisTool
 
@@ -92,7 +102,9 @@ def create_default_registry() -> ToolRegistry:
     registry.register(DestinationSearchTool())
     registry.register(HotelSearchTool())
     registry.register(ActivitySearchTool())
+    registry.register(WebSearchTool())
     registry.register(BudgetCalculatorTool())
+    registry.register(CalculatorTool())
     registry.register(DatabaseQueryTool())
     registry.register(VisionAnalysisTool())
     return registry

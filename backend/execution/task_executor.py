@@ -40,9 +40,10 @@ class TaskExecutor:
         self.tools = tool_registry
         self.event_bus = event_bus
         self.session_id = session_id
+        self.plan_version: int = 1
 
-        # Maps task_id -> (asyncio.Task, cancel_event)
-        self._running: dict[str, tuple[asyncio.Task, asyncio.Event]] = {}
+        # Maps task_id -> (asyncio.Task, cancel_event, execution_id, plan_version)
+        self._running: dict[str, tuple[asyncio.Task, asyncio.Event, str, int]] = {}
         self._execution_task: asyncio.Task | None = None
         self._stopped = asyncio.Event()
         self._stopped.set()  # not running initially
@@ -69,13 +70,12 @@ class TaskExecutor:
 
     async def wait_for_completion(self, timeout: float | None = None) -> bool:
         """Wait until all tasks are complete or timeout."""
+        start_time = asyncio.get_running_loop().time()
         try:
             while not self.graph.is_complete and not self._stopped.is_set():
-                await asyncio.sleep(0.1)
-                if timeout is not None:
-                    timeout -= 0.1
-                    if timeout <= 0:
-                        return False
+                await asyncio.sleep(0.05)
+                if timeout is not None and (asyncio.get_running_loop().time() - start_time) >= timeout:
+                    return False
             return self.graph.is_complete
         except asyncio.CancelledError:
             return False
@@ -105,6 +105,11 @@ class TaskExecutor:
 
     async def _launch_task(self, task: Task) -> None:
         """Launch a single task as an asyncio coroutine."""
+        if task.id in self._running:
+            return  # Prevent duplicate launching of same task ID
+
+        import uuid
+        execution_id = f"{task.id}_p{self.plan_version}_{uuid.uuid4().hex[:6]}"
         cancel_event = asyncio.Event()
 
         # Transition to RUNNING
@@ -122,10 +127,18 @@ class TaskExecutor:
         )
 
         # Create the asyncio task
-        atask = asyncio.create_task(self._run_task(task, cancel_event))
-        self._running[task.id] = (atask, cancel_event)
+        atask = asyncio.create_task(
+            self._run_task(task, cancel_event, execution_id, self.plan_version)
+        )
+        self._running[task.id] = (atask, cancel_event, execution_id, self.plan_version)
 
-    async def _run_task(self, task: Task, cancel_event: asyncio.Event) -> None:
+    async def _run_task(
+        self,
+        task: Task,
+        cancel_event: asyncio.Event,
+        execution_id: str,
+        current_plan_version: int,
+    ) -> None:
         """Execute a single task using its designated tool."""
         try:
             tool = self.tools.get_tool(task.tool)
@@ -140,16 +153,41 @@ class TaskExecutor:
                 input=task.input,
             )
 
-            # Execute the tool
-            result = await tool.execute(task.input, cancel_event)
+            await self.event_bus.emit(
+                EventType.TOOL_PROGRESS,
+                session_id=self.session_id,
+                task_id=task.id,
+                tool_name=task.tool,
+                status="executing",
+            )
 
-            if cancel_event.is_set():
-                # Task was cancelled during execution
+            # Resolve dependency outputs to enrich input for downstream tools
+            tool_input = dict(task.input)
+            dep_outputs = {}
+            for dep_id in task.dependencies:
+                dep_task = self.graph.get_task(dep_id)
+                if dep_task and dep_task.output:
+                    dep_outputs[dep_id] = dep_task.output
+            if dep_outputs:
+                tool_input["_dependency_outputs"] = dep_outputs
+
+            # Execute the tool
+            result = await tool.execute(tool_input, cancel_event)
+
+            # Check for cancellation or stale execution
+            running_info = self._running.get(task.id)
+            is_current_execution = running_info and running_info[2] == execution_id
+
+            if cancel_event.is_set() or task.status == TaskStatus.CANCELLED or not is_current_execution:
+                return
+
+            if self.plan_version != current_plan_version:
                 return
 
             # Store result and mark complete
             self.graph.set_task_output(task.id, result.data)
-            self.graph.update_task_status(task.id, TaskStatus.COMPLETED)
+            if task.status == TaskStatus.RUNNING:
+                self.graph.update_task_status(task.id, TaskStatus.COMPLETED)
 
             await self.event_bus.emit(
                 EventType.TASK_COMPLETED,
@@ -174,10 +212,11 @@ class TaskExecutor:
                 except Exception:
                     pass
         except Exception as e:
-            try:
-                self.graph.update_task_status(task.id, TaskStatus.FAILED, str(e))
-            except Exception:
-                pass
+            if task.status == TaskStatus.RUNNING:
+                try:
+                    self.graph.update_task_status(task.id, TaskStatus.FAILED, str(e))
+                except Exception:
+                    pass
 
             await self.event_bus.emit(
                 EventType.TASK_FAILED,
@@ -204,14 +243,13 @@ class TaskExecutor:
 
         for tid in cancelled_ids:
             if tid in self._running:
-                atask, cancel_event = self._running[tid]
+                atask, cancel_event, _, _ = self._running.pop(tid)
                 cancel_event.set()
                 atask.cancel()
                 try:
                     await atask
                 except (asyncio.CancelledError, Exception):
                     pass
-                self._running.pop(tid, None)
 
             await self.event_bus.emit(
                 EventType.TASK_CANCELLED,
@@ -232,7 +270,7 @@ class TaskExecutor:
 
     async def _cancel_all_running(self, reason: str = "shutdown") -> None:
         """Cancel all currently running asyncio tasks."""
-        for tid, (atask, cancel_event) in list(self._running.items()):
+        for tid, (atask, cancel_event, _, _) in list(self._running.items()):
             cancel_event.set()
             atask.cancel()
             try:
@@ -245,7 +283,7 @@ class TaskExecutor:
 
     def _cleanup_finished(self) -> None:
         """Remove completed asyncio tasks from the running dict."""
-        finished = [tid for tid, (at, _) in self._running.items() if at.done()]
+        finished = [tid for tid, (at, _, _, _) in self._running.items() if at.done()]
         for tid in finished:
             del self._running[tid]
 

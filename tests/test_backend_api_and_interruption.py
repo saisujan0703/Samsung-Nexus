@@ -80,18 +80,25 @@ def test_websocket_and_live_events():
 
 
 @pytest.mark.asyncio
-async def test_end_to_end_interruptible_flow():
+async def test_end_to_end_interruptible_flow(monkeypatch):
     """
     Test the exact defining NEXUS scenario:
     Initial Goal -> Execution -> Interruption (Parents + Walking) ->
     Constraint Change -> Plan Diff -> Selective Cancellation ->
     Budget Update -> New Goal Pivot.
     """
+    monkeypatch.setenv("LLM_PROVIDER", "mock")
+    from backend.config import Settings, settings
+    monkeypatch.setattr(Settings, "LLM_PROVIDER", "mock")
+    monkeypatch.setattr(settings, "LLM_PROVIDER", "mock")
     from backend.memory.session_memory import session_memory
     from backend.realtime.events import EventType
 
+    from backend.providers.base import MockProvider
     session_id = "test_scenario_1"
+    await session_memory.delete(session_id)
     orchestrator, event_bus, _ = await session_memory.get_or_create(session_id)
+    orchestrator.provider = MockProvider()
 
     events_received = []
 
@@ -168,3 +175,72 @@ async def test_end_to_end_interruptible_flow():
     # Clean up
     await orchestrator.executor.stop()
     await session_memory.delete(session_id)
+
+
+@pytest.mark.asyncio
+async def test_session_memory_get():
+    """Verify session_memory.get() return values for active, missing, and expired sessions."""
+    from backend.memory.session_memory import SessionMemory
+
+    mem = SessionMemory(ttl_seconds=1)
+    session_id = "test_mem_s1"
+
+    # Non-existent session returns (None, None)
+    orch, bus = await mem.get("non_existent")
+    assert orch is None
+    assert bus is None
+
+    # Created session returns orchestrator and event_bus
+    orch1, bus1, is_new = await mem.get_or_create(session_id)
+    assert is_new is True
+    assert orch1 is not None
+    assert bus1 is not None
+
+    orch2, bus2 = await mem.get(session_id)
+    assert orch2 is orch1
+    assert bus2 is bus1
+
+    # Wait for TTL to expire
+    await asyncio.sleep(1.1)
+
+    # Expired session returns (None, None) and is evicted
+    orch_exp, bus_exp = await mem.get(session_id)
+    assert orch_exp is None
+    assert bus_exp is None
+
+
+@pytest.mark.asyncio
+async def test_speech_started_voice_interruption(monkeypatch):
+    """Verify handle_speech_started() and speech-start voice interruption flow."""
+    from backend.config import Settings, settings
+    monkeypatch.setattr(Settings, "LLM_PROVIDER", "mock")
+    monkeypatch.setattr(settings, "LLM_PROVIDER", "mock")
+    from backend.memory.session_memory import session_memory
+    from backend.agent.orchestrator import AgentState
+
+    from backend.providers.base import MockProvider
+    session_id = "test_speech_int"
+    await session_memory.delete(session_id)
+    orchestrator, event_bus, _ = await session_memory.get_or_create(session_id)
+    orchestrator.provider = MockProvider()
+
+    # 1. Start initial goal
+    await orchestrator.handle_user_input("Plan a 3-day Chennai trip for 15000 rupees.")
+    assert orchestrator.state in (AgentState.EXECUTING, AgentState.THINKING)
+
+    # 2. Simulate speech_started signal while agent is active
+    await orchestrator.handle_speech_started()
+    assert orchestrator.state == AgentState.INTERRUPTED
+
+    # 3. Followed by user interruption transcript
+    interruption_text = "Wait. I am travelling with my parents. Avoid places requiring lots of walking."
+    res = await orchestrator.handle_user_input(interruption_text)
+
+    assert res["status"] == "replanned"
+    assert "diff" in res
+
+    # Clean up
+    await orchestrator.executor.stop()
+    await session_memory.delete(session_id)
+
+

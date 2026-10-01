@@ -20,10 +20,11 @@ export function EventTimeline({ events }: EventTimelineProps) {
 
   const getEventBadgeColor = (type: string) => {
     const t = type.toUpperCase();
+    if (t.includes("IMAGE") || t.includes("VISION")) return "bg-purple-500/20 text-purple-300 border-purple-500/30";
     if (t.includes("INTERRUPTION")) return "bg-rose-500/20 text-rose-300 border-rose-500/30";
     if (t.includes("PLAN_DIFF") || t.includes("REPLAN")) return "bg-amber-500/20 text-amber-300 border-amber-500/30";
     if (t.includes("COMPLETED")) return "bg-emerald-500/20 text-emerald-300 border-emerald-500/30";
-    if (t.includes("STARTED")) return "bg-cyan-500/20 text-cyan-300 border-cyan-500/30";
+    if (t.includes("STARTED") || t.includes("PROGRESS")) return "bg-cyan-500/20 text-cyan-300 border-cyan-500/30";
     if (t.includes("CANCELLED")) return "bg-slate-700 text-slate-300 border-slate-600";
     return "bg-indigo-500/20 text-indigo-300 border-indigo-500/30";
   };
@@ -62,10 +63,14 @@ export function EventTimeline({ events }: EventTimelineProps) {
                 {evt.type}
               </span>
               <span className="text-slate-300 truncate">
-                {evt.data?.state
+                {evt.data?.analysis
+                  ? `✨ Analysis: "${evt.data.analysis.slice(0, 45)}..."`
+                  : evt.data?.prompt
+                  ? `🖼 Image: "${evt.data.prompt.slice(0, 45)}"`
+                  : evt.data?.state
                   ? `State -> ${evt.data.state} (${evt.data.reason || "transition"})`
                   : evt.data?.task_id
-                  ? `Task: ${evt.data.task_id} ${evt.data?.tool ? `[${evt.data.tool}]` : ""}`
+                  ? `Task: ${evt.data.task_id} ${evt.data?.tool || evt.data?.tool_name ? `[${evt.data.tool || evt.data.tool_name}]` : ""}`
                   : evt.data?.text
                   ? `"${evt.data.text.slice(0, 45)}..."`
                   : evt.data?.diff?.summary

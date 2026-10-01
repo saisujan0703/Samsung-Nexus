@@ -1,10 +1,10 @@
-# NEXUS — Architecture Document
+# SURU AI — Architecture Document
 
-> **"An AI agent that doesn't restart when you change your mind."**
+> **"Hey SURU — An AI agent that doesn't restart when you change your mind."**
 
 ## 1. System Overview
 
-NEXUS is an interruptible real-time multimodal AI agent. Unlike traditional chatbots that process one request at a time, NEXUS maintains a live task graph, executes work asynchronously, and intelligently handles user interruptions without discarding useful progress.
+SURU AI is an interruptible real-time agent. Unlike traditional chatbots that process one request at a time, SURU AI maintains a live task graph, executes work asynchronously, and intelligently handles user interruptions without discarding useful progress.
 
 ```mermaid
 graph TB
@@ -434,3 +434,64 @@ docker-compose up --build
 - Tool parameters sanitized
 - Rate limiting on API endpoints
 - CORS configured for frontend origin only
+
+## 14. Evaluation Architecture & Deterministic Scenarios
+
+SURU AI includes a built-in evaluation framework in `backend/evaluation/` covering 9 deterministic scenario benchmarks:
+
+1. **Scenario 1 — Basic Goal**: Single prompt goal extraction and DAG execution.
+2. **Scenario 2 — Constraint Change**: Dynamic constraint update and PlanDiff selective cancellation.
+3. **Scenario 3 — Question Interruption**: Side question answering while preserving task graph state.
+4. **Scenario 4 — Task Cancellation**: Specific task cancellation during execution.
+5. **Scenario 5 — Goal Pivot**: Full `NEW_GOAL` pivot with stale task superseding.
+6. **Scenario 6 — Rapid Interruptions**: Rapid consecutive updates with single authoritative final state.
+7. **Scenario 7 — Voice Onset Interruption**: Fast-path `speech_started` TTS silencing and state transition.
+8. **Scenario 8 — Multimodal Grounding**: Image upload analysis and visual context grounding.
+9. **Scenario 9 — Session Reconnect**: WebSocket reconnect state resynchronization.
+
+Evaluation endpoints:
+- `GET /api/session/{session_id}/snapshot`
+- `GET /api/session/{session_id}/events`
+- `POST /api/evaluate/{scenario_id}`
+
+## 15. General-Purpose Agent Architecture (Phase 8)
+
+In Phase 8, SURU AI evolved from a travel-demo system into a genuine general-purpose real-time interruptible agent.
+
+### Adaptive Query Flow
+
+```text
+User Input
+   │
+   ▼
+Orchestrator
+   │
+   ▼
+GeminiProvider / LLMProvider (Semantic Intent Reasoning)
+   ├────────────────────────────────────────┬────────────────────────────────────────┐
+   ▼                                        ▼                                        ▼
+Direct Knowledge / Coding / Math        Multi-Step Tasks (e.g. Travel)           Image Multimodal Query
+- Direct Gemini reasoning                - TaskGraph (DAG) generated             - Vision pipeline
+- Direct answer or CalculatorTool       - TaskExecutor concurrent run           - ContextManager grounding
+- No unnecessary DAG tasks               - Tools: DB, Search, Budget             - Visual response synthesis
+   │                                        │                                        │
+   └────────────────────────────────────────┴────────────────────────────────────────┘
+                                            │
+                                            ▼
+                               Gemini Synthesis / Final Answer
+                                            │
+                                            ▼
+                               RESPONSE_COMPLETED & EventBus
+                                            │
+                                            ▼
+                               Frontend Dashboard & TTS Audio
+```
+
+### Key Architectural Principles
+- **Domain Independence**: Travel planning is now one specialized capability among many; general questions (e.g. science, sports, coding, math) are fully supported without travel DAG contamination.
+- **Adaptive Task Graph Planning**: Direct queries execute immediately with zero superfluous DAG overhead, while complex multi-step workflows utilize the full power of concurrent `TaskGraph` execution.
+- **Provider Dual-Mode**:
+  - `GeminiProvider`: The live production reasoning brain, featuring semantic intent classification, Google Search grounding, transient retry handling (503/429), and rich synthesized responses without question-echoing.
+  - `MockProvider`: Preserved strictly for deterministic offline testing and the 13 automated evaluation scenarios.
+- **Domain-Agnostic Interruption Engine**: Fast-path voice detection (`USER_SPEECH_STARTED`), semantic interruption classification (`CONSTRAINT_CHANGE`, `NEW_GOAL`, `QUESTION`, `CANCEL_TASK`), and incremental `PlanDiff` (KEEP, CANCEL, MODIFY, ADD) apply uniformly across any subject or task domain.
+

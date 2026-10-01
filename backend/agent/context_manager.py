@@ -139,9 +139,20 @@ class ContextManager:
 
         return preserved
 
+    def get_conversation_history(self) -> list[dict[str, str]]:
+        """Return chronological list of conversation turns in the session."""
+        return list(self.context.conversation_turns)
+
+    @staticmethod
+    def get_current_runtime_date() -> str:
+        """Dynamically return the current UTC date formatted cleanly (never hardcoded)."""
+        return datetime.now(timezone.utc).strftime("%A, %B %d, %Y")
+
     def get_context_summary(self) -> str:
-        """Generate a compressed context summary for LLM prompts."""
-        parts = [f"Goal: {self.context.current_goal_summary}"]
+        """Generate a compressed context summary for LLM prompts including conversation turns and runtime date."""
+        parts = [f"Current Runtime Date: {self.get_current_runtime_date()}"]
+        if self.context.current_goal_summary:
+            parts.append(f"Current Goal: {self.context.current_goal_summary}")
         if self.context.constraints:
             parts.append(f"Constraints: {self.context.constraints}")
         if self.context.preferences:
@@ -149,7 +160,14 @@ class ContextManager:
         valid = self.get_valid_findings()
         if valid:
             parts.append(f"Findings: {len(valid)} valid results available")
+        if self.context.conversation_turns:
+            history_lines = [
+                f"{turn.get('role', 'user').capitalize()}: {turn.get('content', '')}"
+                for turn in self.context.conversation_turns[-6:]
+            ]
+            parts.append("Recent Conversation:\n" + "\n".join(history_lines))
         return "\n".join(parts)
+
 
     def to_dict(self) -> dict[str, Any]:
         return self.context.model_dump()
